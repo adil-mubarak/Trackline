@@ -79,11 +79,25 @@ function workspaceProps(screenName: ProjectBoardProps['screen']): ProjectBoardPr
     screen: screenName, projects: [project], adminProjects: [project], adminProjectsLoading: false, adminProjectsError: '', members: [], projectRole: 'member', globalRole: 'member', selectedProject: project, selectedProjectId: 4,
     issues, calendarIssues: [], calendarLoading: false, myIssues: [issues[0]], myIssuesLoading: false, myIssuesError: '', activityItems: [activity], activityLoading: false, activityPartialErrors: [], analytics, analyticsLoading: false, analyticsError: '', adminUsers: [], adminUsersLoading: false, adminUsersError: '', adminUsersHasMore: false, managedUserID: null, managedUserProjectIDs: [], managedUserProjectsLoading: false, managedUserProjectsError: '', currentUserID: 12,
     loading: false, error: '', query: '', statusFilter: '', priorityFilter: '', email: 'me@example.test',
-    onSelectProject: vi.fn(), onShowProjects: vi.fn(), onShowCalendar: vi.fn(), onShowAdmin: vi.fn(), onShowMyIssues: vi.fn(), onShowActivity: vi.fn(), onShowAnalytics: vi.fn(), onShowUsers: vi.fn(), onLoadMoreUsers: vi.fn(), onResetUserPassword: vi.fn(async () => {}), onCreateUser: vi.fn(async () => {}), onSetUserActive: vi.fn(async () => {}), onManageUserProjects: vi.fn(), onToggleUserProject: vi.fn(async () => {}), onOpenBoard: vi.fn(), onAddProject: vi.fn(), onCreateProject: vi.fn(async () => true), onDeleteProject: vi.fn(), onDeleteIssue: vi.fn(), onLoadUserDirectory: vi.fn(async () => ({ users: [{ id: 7, username: 'alex' }], next_after_id: null })), onAddIssue: vi.fn(), onLogout: vi.fn(), onDismissError: vi.fn(), onQueryChange: vi.fn(), onStatusFilterChange: vi.fn(), onPriorityFilterChange: vi.fn(), onOpenIssue: vi.fn(), onSetStatus: vi.fn(), onMoveIssue: vi.fn(), onCalendarRangeChange: vi.fn(), onSearchUsers: vi.fn(async () => []), onAddMember: vi.fn(async () => {}), onRemoveMember: vi.fn(async () => {}), onSetMemberRole: vi.fn(async () => {}), movePending: false, moveToast: '', onDismissMoveToast: vi.fn(),
+    onSelectProject: vi.fn(), onShowProjects: vi.fn(), onShowCalendar: vi.fn(), onShowAdmin: vi.fn(), onShowMyIssues: vi.fn(), onShowActivity: vi.fn(), onShowAnalytics: vi.fn(), onShowChat: vi.fn(), onAskTrackerAssistant: vi.fn(async () => 'Assistant response'), onShowUsers: vi.fn(), onLoadMoreUsers: vi.fn(), onResetUserPassword: vi.fn(async () => {}), onCreateUser: vi.fn(async () => {}), onSetUserActive: vi.fn(async () => {}), onManageUserProjects: vi.fn(), onToggleUserProject: vi.fn(async () => {}), onOpenBoard: vi.fn(), onAddProject: vi.fn(), onCreateProject: vi.fn(async () => true), onDeleteProject: vi.fn(), onDeleteIssue: vi.fn(), onLoadUserDirectory: vi.fn(async () => ({ users: [{ id: 7, username: 'alex' }], next_after_id: null })), onAddIssue: vi.fn(), onLogout: vi.fn(), onDismissError: vi.fn(), onQueryChange: vi.fn(), onStatusFilterChange: vi.fn(), onPriorityFilterChange: vi.fn(), onOpenIssue: vi.fn(), onSetStatus: vi.fn(), onMoveIssue: vi.fn(), onCalendarRangeChange: vi.fn(), onSearchUsers: vi.fn(async () => []), onAddMember: vi.fn(async () => {}), onRemoveMember: vi.fn(async () => {}), onSetMemberRole: vi.fn(async () => {}), movePending: false, moveToast: '', onDismissMoveToast: vi.fn(),
   }
 }
 
 describe('workspace sidebar sections', () => {
+  it('opens the read-only copilot panel without replacing the board and restores focus on Escape', async () => {
+    const props = workspaceProps('board')
+    render(<ProjectBoard {...props} />)
+    const trigger = screen.getByRole('button', { name: 'Ask AI' })
+    fireEvent.click(trigger)
+
+    expect(await screen.findByRole('heading', { name: 'Trackline Copilot' })).not.toBeNull()
+    expect(screen.getByRole('heading', { name: 'Roadmap' })).not.toBeNull()
+    expect(screen.getByText(/previous turns are not included as context/i)).not.toBeNull()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('complementary', { name: 'AI Copilot' })).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(trigger))
+  })
+
   it('does not expose the UI components page', () => {
     const props = workspaceProps('board')
     render(<ProjectBoard {...props} />)

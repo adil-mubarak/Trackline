@@ -38,6 +38,7 @@ func main() {
 		"projects": env("PROJECT_SERVICE_URL", "http://project:8082"),
 		"issues":   env("ISSUE_SERVICE_URL", "http://issue:8083"),
 		"activity": env("ACTIVITY_SERVICE_URL", "http://activity:8084"),
+		"ai":       env("AI_SERVICE_URL", "http://ai:8087"),
 	}
 	handler := newGatewayHandler(secret, routes, bucket, transport)
 	handler = corsMiddleware(parseAllowedOrigins(env("CORS_ALLOWED_ORIGINS", "")), handler)
@@ -102,6 +103,12 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 
 func newGatewayHandler(secret []byte, routes map[string]string, bucket *ratelimit.Bucket, transport http.RoundTripper) http.Handler {
 	mux := http.NewServeMux()
+	aiTransport := transport
+	if baseTransport, ok := transport.(*http.Transport); ok {
+		clonedTransport := baseTransport.Clone()
+		clonedTransport.ResponseHeaderTimeout = 175 * time.Second
+		aiTransport = clonedTransport
+	}
 	mux.Handle("/health", health.Handler(nil))
 	mux.Handle("/ready", health.Handler(func() error { return checkUpstreams(routes, transport) }))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -161,11 +168,16 @@ func newGatewayHandler(secret []byte, routes map[string]string, bucket *ratelimi
 		}
 		proxy := httputil.NewSingleHostReverseProxy(destination)
 		proxy.Transport = transport
+		requestTimeout := 10 * time.Second
+		if r.URL.Path == "/ai/chat" {
+			proxy.Transport = aiTransport
+			requestTimeout = 185 * time.Second
+		}
 		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
 			slog.Warn("upstream request failed", "error", err)
 			http.Error(w, "upstream unavailable", http.StatusBadGateway)
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 		defer cancel()
 		proxy.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -175,6 +187,11 @@ func newGatewayHandler(secret []byte, routes map[string]string, bucket *ratelimi
 func checkUpstreams(routes map[string]string, transport http.RoundTripper) error {
 	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
 	for name, target := range routes {
+		// AI is an optional feature. An unconfigured or unavailable model provider
+		// must not take the core issue tracker out of readiness.
+		if name == "ai" {
+			continue
+		}
 		u, err := url.Parse(strings.TrimRight(target, "/") + "/ready")
 		if err != nil {
 			return err
@@ -252,6 +269,8 @@ func gatewayRoute(routes map[string]string, path string) (target string, protect
 		return routes["issues"], true, routes["issues"] != ""
 	case path == "/activity" || strings.HasPrefix(path, "/activity/"):
 		return routes["activity"], true, routes["activity"] != ""
+	case path == "/ai/chat":
+		return routes["ai"], true, routes["ai"] != ""
 	default:
 		return "", false, false
 	}

@@ -336,6 +336,47 @@ func TestGatewayReadinessChecksEveryUpstream(t *testing.T) {
 	if err := checkUpstreams(map[string]string{"missing": "http://127.0.0.1:1"}, http.DefaultTransport); err == nil {
 		t.Fatal("expected unavailable upstream error")
 	}
+	if err := checkUpstreams(map[string]string{"ai": "http://127.0.0.1:1"}, http.DefaultTransport); err != nil {
+		t.Fatalf("optional AI upstream should not block tracker readiness: %v", err)
+	}
+}
+
+func TestGatewayProtectsAndForwardsAIChat(t *testing.T) {
+	secret := []byte("gateway-test-secret-at-least-32-bytes")
+	var seenPath, seenUser string
+	aiService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath, seenUser = r.URL.Path, r.Header.Get("X-User-ID")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"reply":"ok","model":"nvidia/nemotron-3-ultra-550b-a55b:free"}`))
+	}))
+	defer aiService.Close()
+	authService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/session" {
+			_, _ = w.Write([]byte(`{"password_reset_required":false,"password_reset_version":0}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer authService.Close()
+	handler := newGatewayHandler(secret, map[string]string{"auth": authService.URL, "ai": aiService.URL}, ratelimit.New(10, 1), http.DefaultTransport)
+	token, err := auth.IssueToken(87, "member", secret, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/ai/chat", strings.NewReader(`{"message":"hello"}`))
+	r.Header.Set("Authorization", "Bearer "+token)
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || seenPath != "/ai/chat" || seenUser != "87" {
+		t.Fatalf("status=%d path=%q user=%q body=%s", w.Code, seenPath, seenUser, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodPost, "/ai/chat", strings.NewReader(`{"message":"hello"}`))
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d, want %d", w.Code, http.StatusUnauthorized)
+	}
 }
 
 func TestCORSPreflightRequiresExactAllowedOrigin(t *testing.T) {

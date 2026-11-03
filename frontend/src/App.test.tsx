@@ -9,6 +9,55 @@ afterEach(() => {
 })
 
 describe('restoring UI identity from an existing session token', () => {
+  it('opens the AI assistant and sends an authenticated chat request', async () => {
+    const payload = btoa(JSON.stringify({ sub: 42, role: 'member', exp: 4_000_000_000 }))
+    localStorage.setItem('token', `header.${payload}.signature`)
+    const chatRequest = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/projects') return new Response(JSON.stringify([{ id: 7, name: 'Project', description: '' }]), { status: 200 })
+      if (url === '/api/projects/7/members') return new Response(JSON.stringify([]), { status: 200 })
+      if (url === '/api/ai/chat') {
+        chatRequest(init)
+        return new Response(JSON.stringify({ reply: 'Project 7 has two open issues.', model: 'test-model' }), { status: 200 })
+      }
+      return new Response(JSON.stringify([]), { status: 200 })
+    }))
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Ask AI' }))
+    expect(await screen.findByRole('heading', { name: 'Trackline Copilot' })).not.toBeNull()
+    expect(screen.getByRole('heading', { name: 'Project' })).not.toBeNull()
+    fireEvent.change(screen.getByRole('textbox', { name: 'Ask the tracker assistant' }), { target: { value: 'Summarize project 7' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }))
+
+    expect(await screen.findByText('Project 7 has two open issues.')).not.toBeNull()
+    expect(chatRequest).toHaveBeenCalledTimes(1)
+    const request = chatRequest.mock.calls[0][0] as RequestInit
+    expect(request.method).toBe('POST')
+    expect(JSON.parse(String(request.body))).toEqual({ message: 'Summarize project 7' })
+    expect((request.headers as Record<string, string>).Authorization).toBe(`Bearer header.${payload}.signature`)
+  })
+
+  it('keeps the prompt available to retry when the chat request fails', async () => {
+    const payload = btoa(JSON.stringify({ sub: 42, role: 'member', exp: 4_000_000_000 }))
+    localStorage.setItem('token', `header.${payload}.signature`)
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/projects') return new Response(JSON.stringify([]), { status: 200 })
+      if (String(input) === '/api/ai/chat') return new Response('AI unavailable', { status: 503 })
+      return new Response(JSON.stringify([]), { status: 200 })
+    }))
+
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Ask AI' }))
+    const composer = screen.getByRole('textbox', { name: 'Ask the tracker assistant' }) as HTMLTextAreaElement
+    fireEvent.change(composer, { target: { value: 'List my projects' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }))
+
+    expect(await screen.findByRole('alert')).not.toBeNull()
+    await waitFor(() => expect(composer.value).toBe('List my projects'))
+  })
+
   it('uses the token subject for My issues when saved user_id is missing', async () => {
     const payload = btoa(JSON.stringify({ sub: 42, role: 'member', exp: 4_000_000_000 }))
     localStorage.setItem('token', `header.${payload}.signature`)
@@ -23,6 +72,7 @@ describe('restoring UI identity from an existing session token', () => {
     }))
 
     render(<App />)
+    await screen.findAllByRole('button', { name: 'Project' })
     await screen.findByRole('button', { name: 'My issues' })
     fireEvent.click(screen.getByRole('button', { name: 'My issues' }))
 

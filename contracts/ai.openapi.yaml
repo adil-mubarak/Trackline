@@ -1,0 +1,48 @@
+openapi: 3.1.0
+info:
+  title: Trackline AI API
+  version: 1.0.0
+paths:
+  /ai/chat:
+    post:
+      summary: Send a chat message to the configured OpenRouter model with optional read-only tracker retrieval
+      description: >-
+        Authenticated server-side proxy. The API key is held by the AI service
+        and is never returned to the caller. When the caller has an authenticated
+        session, the model may invoke a bounded allowlist of read-only tools that
+        retrieve caller-authorized records through the Gateway from Auth,
+        Project, Issue, and Activity APIs. It does not yet retrieve GitHub data.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string, minLength: 1, maxLength: 8000 }
+      responses:
+        '200':
+          description: Model reply
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [reply, model]
+                properties:
+                  reply: { type: string }
+                  model: { type: string }
+        '400': { description: Invalid request }
+        '401': { description: OpenRouter rejected the configured API key }
+        '402': { description: OpenRouter account requires credits }
+        '404': { description: OpenRouter model was not found }
+        '429': { description: OpenRouter rate limit reached }
+        '503': { description: OpenRouter is not configured }
+        '502': { description: OpenRouter request failed or returned an invalid response }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

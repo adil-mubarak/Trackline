@@ -51,6 +51,7 @@ Each service owns its database and accesses another service only through its API
 - An activity feed populated from issue events
 - A React UI for projects and issues, including filters and a status-grouped Kanban view
 - Health/readiness endpoints, structured logs, request IDs, graceful shutdown, and outgoing-call timeouts
+- Proposed optional AI chat and read-only MCP insights plan: [`docs/AI_INSIGHTS.md`](docs/AI_INSIGHTS.md)
 
 ### Data structures and algorithms
 
@@ -86,6 +87,12 @@ Each service owns its database and accesses another service only through its API
   deactivation/reactivation.
 - Global admins can assign active accounts to projects from the Users page;
   project managers retain project-scoped member controls.
+- Initial authenticated OpenRouter chat endpoint (`POST /ai/chat`) is server-side;
+  the frontend includes an AI Copilot panel and full-page entry, and bounded read-only tools
+  retrieve authorized tracker data through service APIs. Each submitted question
+  is independent; conversation history is not sent to the model. GitHub evidence
+  retrieval is not implemented yet. The OpenRouter key is
+  required for chat, but not for the core tracker to start.
 
 ## Build roadmap
 

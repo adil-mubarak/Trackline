@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from 'react'
 import { ActivityEntry, AdminUser, AnalyticsSnapshot, applyIssueMove, Issue, Project, ProjectBoard, ProjectMember, UserDirectoryPage, UserSuggestion } from './ProjectBoard'
+import ChatPage from './ChatPage'
 
 const apiBaseURL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '')
 
@@ -103,7 +104,7 @@ export default function App() {
   const [createIssueOpen, setCreateIssueOpen] = useState(false)
   const [movePending, setMovePending] = useState(false)
   const [moveToast, setMoveToast] = useState('')
-  const [screen, setScreen] = useState<'board' | 'projects' | 'calendar' | 'admin' | 'my-issues' | 'activity' | 'analytics' | 'users'>('board')
+  const [screen, setScreen] = useState<'board' | 'projects' | 'calendar' | 'admin' | 'my-issues' | 'activity' | 'analytics' | 'users' | 'chat'>('board')
   const projectRequestId = useRef(0)
   const issueRequestId = useRef(0)
   const myIssuesRequestId = useRef(0)
@@ -607,6 +608,11 @@ export default function App() {
     return result
   }
 
+  async function askTrackerAssistant(message: string) {
+    const result = await api('/ai/chat', { method: 'POST', body: JSON.stringify({ message }) }) as { reply: string; model: string }
+    return result.reply
+  }
+
   async function loadUserDirectory(afterID: number | null): Promise<UserDirectoryPage> {
     const params = new URLSearchParams({ limit: '25' })
     if (afterID !== null) params.set('after_id', String(afterID))
@@ -840,6 +846,8 @@ export default function App() {
         email={localStorage.getItem('email') || ''}
         onSelectProject={selectProject}
         screen={screen}
+        onShowChat={() => setScreen('chat')}
+        onAskTrackerAssistant={askTrackerAssistant}
         onShowProjects={showProjects}
         onShowCalendar={() => setScreen('calendar')}
         onShowAdmin={() => setScreen('admin')}

@@ -16,6 +16,7 @@ import {
 } from '@dnd-kit/core'
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
+import ChatPage from './ChatPage'
 
 export type Project = { id: number; name: string; description: string; owner_id?: number; owner_username?: string }
 export type Issue = {
@@ -50,7 +51,7 @@ const columns = [
 type Status = (typeof columns)[number]['id']
 
 export type ProjectBoardProps = {
-  screen: 'board' | 'projects' | 'calendar' | 'admin' | 'my-issues' | 'activity' | 'analytics' | 'users'
+  screen: 'board' | 'projects' | 'calendar' | 'admin' | 'my-issues' | 'activity' | 'analytics' | 'users' | 'chat'
   projects: Project[]
   adminProjects: Project[]
   adminProjectsLoading: boolean
@@ -94,6 +95,8 @@ export type ProjectBoardProps = {
   onShowMyIssues: () => void
   onShowActivity: () => void
   onShowAnalytics: () => void
+  onShowChat: () => void
+  onAskTrackerAssistant: (message: string) => Promise<string>
   onShowUsers: () => void
   onLoadMoreUsers: () => void
   onResetUserPassword: (userID: number, temporaryPassword: string) => Promise<void>
@@ -129,9 +132,25 @@ export type ProjectBoardProps = {
 export function ProjectBoard(props: ProjectBoardProps) {
   const [view, setView] = useState<'board' | 'list'>('board')
   const [sortDescending, setSortDescending] = useState(true)
+  const [copilotOpen, setCopilotOpen] = useState(false)
   const [addMembersOpen, setAddMembersOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'project'; project: Project } | { kind: 'issue'; issue: Issue } | null>(null)
   const addMembersTriggerRef = useRef<HTMLButtonElement>(null)
+  const copilotTriggerRef = useRef<HTMLButtonElement>(null)
+
+  function closeCopilot() {
+    setCopilotOpen(false)
+    window.setTimeout(() => copilotTriggerRef.current?.focus(), 0)
+  }
+
+  useEffect(() => {
+    if (!copilotOpen) return
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') closeCopilot()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [copilotOpen])
 
   function requestDelete(action: NonNullable<typeof pendingDelete>) {
     setPendingDelete(action)
@@ -178,6 +197,7 @@ export function ProjectBoard(props: ProjectBoardProps) {
         onShowMyIssues={props.onShowMyIssues}
         onShowActivity={props.onShowActivity}
         onShowAnalytics={props.onShowAnalytics}
+        onShowChat={props.onShowChat}
         onShowUsers={props.onShowUsers}
         showUserManagement={props.globalRole === 'admin'}
         onOpenBoard={props.onOpenBoard}
@@ -185,7 +205,7 @@ export function ProjectBoard(props: ProjectBoardProps) {
         onLogout={props.onLogout}
       />
       <div className="main-area">
-        <TopBar projectName={props.selectedProject?.name} section={screenLabel(props.screen)} query={props.query} onQueryChange={props.onQueryChange} onAddIssue={props.onAddIssue} onShowProjects={props.onShowProjects} onOpenBoard={props.onOpenBoard} onOpenCurrentSection={() => {
+        <TopBar projectName={props.selectedProject?.name} section={screenLabel(props.screen)} query={props.query} onQueryChange={props.onQueryChange} onAddIssue={props.onAddIssue} onOpenCopilot={() => setCopilotOpen(true)} copilotTriggerRef={copilotTriggerRef} onShowProjects={props.onShowProjects} onOpenBoard={props.onOpenBoard} onOpenCurrentSection={() => {
           if (props.screen === 'projects') props.onShowProjects()
           else if (props.screen === 'board') props.onOpenBoard()
           else if (props.screen === 'admin') props.onShowAdmin()
@@ -194,9 +214,10 @@ export function ProjectBoard(props: ProjectBoardProps) {
           else if (props.screen === 'activity') props.onShowActivity()
           else if (props.screen === 'analytics') props.onShowAnalytics()
           else if (props.screen === 'users') props.onShowUsers()
+          else if (props.screen === 'chat') props.onShowChat()
         }} />
         <main className="board-content">
-          {props.screen === 'board' ? <>
+          {props.screen === 'chat' ? <ChatPage onAsk={props.onAskTrackerAssistant} /> : props.screen === 'board' ? <>
           <ProjectHeader
             project={props.selectedProject}
             openCount={openCount}
@@ -253,6 +274,9 @@ export function ProjectBoard(props: ProjectBoardProps) {
           </> : props.screen === 'projects' ? <ProjectsDirectory projects={props.projects} adminProjects={props.adminProjects} adminProjectsLoading={props.adminProjectsLoading} adminProjectsError={props.adminProjectsError} isGlobalAdmin={props.globalRole === 'admin'} selectedProjectId={props.selectedProjectId} currentUserID={props.currentUserID} error={props.error} onDismissError={props.onDismissError} onSelectProject={id => { props.onSelectProject(id); props.onOpenBoard() }} onDeleteProject={project => setPendingDelete({ kind: 'project', project })} onLoadUserDirectory={props.onLoadUserDirectory} onCreateProject={props.onCreateProject} /> : props.screen === 'calendar' ? <ProjectCalendar project={props.selectedProject} issues={props.calendarIssues} loading={props.calendarLoading} onRangeChange={props.onCalendarRangeChange} onOpenIssue={props.onOpenIssue} /> : props.screen === 'admin' ? <ProjectAdminPanel members={props.members} role={props.projectRole} globalRole={props.globalRole} onSearchUsers={props.onSearchUsers} onAddMember={props.onAddMember} onRemoveMember={props.onRemoveMember} onSetMemberRole={props.onSetMemberRole} /> : props.screen === 'users' ? <UserManagementPage users={props.adminUsers} projects={props.adminProjects} loading={props.adminUsersLoading} error={props.adminUsersError} hasMore={props.adminUsersHasMore} managedUserID={props.managedUserID} managedProjectIDs={props.managedUserProjectIDs} managedProjectsLoading={props.managedUserProjectsLoading} managedProjectsError={props.managedUserProjectsError} onLoadMore={props.onLoadMoreUsers} onResetPassword={props.onResetUserPassword} onCreateUser={props.onCreateUser} onSetUserActive={props.onSetUserActive} onManageProjects={props.onManageUserProjects} onToggleProject={props.onToggleUserProject} currentUserID={props.currentUserID} /> : props.screen === 'my-issues' ? <MyIssuesPage issues={props.myIssues} projects={props.projects} loading={props.myIssuesLoading} error={props.myIssuesError} currentUserID={props.currentUserID} onOpenIssue={props.onOpenIssue} /> : props.screen === 'activity' ? <ActivityPage items={props.activityItems} projects={props.projects} loading={props.activityLoading} partialErrors={props.activityPartialErrors} /> : <AnalyticsPage project={props.selectedProject} snapshot={props.analytics} loading={props.analyticsLoading} error={props.analyticsError} />}
         </main>
       </div>
+      {copilotOpen && <aside className="ai-copilot-panel" aria-label="AI Copilot">
+        <ChatPage presentation="panel" onAsk={props.onAskTrackerAssistant} onClose={closeCopilot} />
+      </aside>}
       {addMembersOpen && <AddMembersModal members={props.members} currentUserID={props.currentUserID} onLoadUserDirectory={props.onLoadUserDirectory} onAddMember={props.onAddMember} onClose={closeAddMembers} />}
       {pendingDelete && <DeleteConfirmationDialog
         title={pendingDelete.kind === 'project' ? `Delete project “${pendingDelete.project.name}”?` : 'Delete this issue?'}
@@ -364,12 +388,13 @@ function Sidebar({
   onShowMyIssues,
   onShowActivity,
   onShowAnalytics,
+  onShowChat,
   onShowUsers,
   showUserManagement,
   onOpenBoard,
   onAddProject,
   onLogout,
-}: Pick<ProjectBoardProps, 'projects' | 'selectedProjectId' | 'screen' | 'projectRole' | 'globalRole' | 'email' | 'onSelectProject' | 'onShowProjects' | 'onShowCalendar' | 'onShowAdmin' | 'onShowMyIssues' | 'onShowActivity' | 'onShowAnalytics' | 'onShowUsers' | 'onOpenBoard' | 'onAddProject' | 'onLogout'> & { showUserManagement: boolean }) {
+}: Pick<ProjectBoardProps, 'projects' | 'selectedProjectId' | 'screen' | 'projectRole' | 'globalRole' | 'email' | 'onSelectProject' | 'onShowProjects' | 'onShowCalendar' | 'onShowAdmin' | 'onShowMyIssues' | 'onShowActivity' | 'onShowAnalytics' | 'onShowChat' | 'onShowUsers' | 'onOpenBoard' | 'onAddProject' | 'onLogout'> & { showUserManagement: boolean }) {
   return (
     <aside className="sidebar">
       <div className="sidebar-main">
@@ -384,6 +409,7 @@ function Sidebar({
           <button className={`nav-item${screen === 'my-issues' ? ' active' : ''}`} type="button" onClick={onShowMyIssues}><span className="material-symbols-outlined" aria-hidden="true">checklist</span>My issues</button>
           <button className={`nav-item${screen === 'activity' ? ' active' : ''}`} type="button" onClick={onShowActivity}><span className="material-symbols-outlined" aria-hidden="true">switch_account</span>Activity</button>
           <button className={`nav-item${screen === 'analytics' ? ' active' : ''}`} type="button" onClick={onShowAnalytics}><span className="material-symbols-outlined" aria-hidden="true">monitoring</span>Analytics</button>
+          <button className={`nav-item${screen === 'chat' ? ' active' : ''}`} type="button" onClick={onShowChat}><span className="material-symbols-outlined" aria-hidden="true">auto_awesome</span>AI Copilot</button>
           {showUserManagement && <button className={`nav-item${screen === 'users' ? ' active' : ''}`} type="button" onClick={onShowUsers}><span className="material-symbols-outlined" aria-hidden="true">manage_accounts</span>Users</button>}
         </nav>
         <div className="sidebar-projects">
@@ -420,12 +446,14 @@ function Sidebar({
   )
 }
 
-function TopBar({ projectName, section, query, onQueryChange, onAddIssue, onShowProjects, onOpenBoard, onOpenCurrentSection }: {
+function TopBar({ projectName, section, query, onQueryChange, onAddIssue, onOpenCopilot, copilotTriggerRef, onShowProjects, onOpenBoard, onOpenCurrentSection }: {
   projectName?: string
   section: string
   query: string
   onQueryChange: (value: string) => void
   onAddIssue: (status?: string) => void
+  onOpenCopilot: () => void
+  copilotTriggerRef: React.Ref<HTMLButtonElement>
   onShowProjects: () => void
   onOpenBoard: () => void
   onOpenCurrentSection: () => void
@@ -450,6 +478,7 @@ function TopBar({ projectName, section, query, onQueryChange, onAddIssue, onShow
         </button>
         <button className="icon-button" type="button" aria-label="Help" title="Not available yet" disabled><span className="material-symbols-outlined" aria-hidden="true">help</span></button>
         <span className="topbar-divider" />
+        <button ref={copilotTriggerRef} className="secondary-button ask-ai-button" type="button" onClick={onOpenCopilot}><span className="material-symbols-outlined" aria-hidden="true">auto_awesome</span>Ask AI</button>
         <button className="primary-button" type="button" onClick={() => onAddIssue()}>
           <span className="material-symbols-outlined" aria-hidden="true">add</span>New issue
         </button>
@@ -941,7 +970,7 @@ function MetricBar({ label, count, total, tone }: { label: string; count: number
 }
 
 function screenLabel(screen: ProjectBoardProps['screen']) {
-  return ({ board: 'Board', projects: 'Projects', calendar: 'Calendar', admin: 'Project team', 'my-issues': 'My issues', activity: 'Activity', analytics: 'Analytics', users: 'Users' })[screen]
+  return ({ board: 'Board', projects: 'Projects', calendar: 'Calendar', admin: 'Project team', 'my-issues': 'My issues', activity: 'Activity', analytics: 'Analytics', users: 'Users', chat: 'AI Copilot' })[screen]
 }
 
 function statusLabel(status: string) {
