@@ -57,10 +57,18 @@ var trackerToolSpecs = []trackerToolSpec{
 	{"list_project_members", "List member usernames and roles for an accessible project. Only IDs returned by the Project service are resolved through Auth; no email addresses are returned.", `{"type":"object","properties":{"project_id":{"type":"integer","minimum":1}},"required":["project_id"],"additionalProperties":false}`},
 }
 
-func newTrackerMCP(ctx context.Context, gatewayURL, bearer, requestID string, client *http.Client) (*mcp.ClientSession, []openRouterTool, error) {
+func newTrackerMCP(ctx context.Context, gatewayURL, bearer, requestID string, client *http.Client, github ...*githubApp) (*mcp.ClientSession, []openRouterTool, error) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "bug-issue-tracker-readonly", Version: "1.0.0"}, &mcp.ServerOptions{})
 	readOnly, openWorld := false, false
-	for _, spec := range trackerToolSpecs {
+	specs := trackerToolSpecs
+	var app *githubApp
+	if len(github) > 0 {
+		app = github[0]
+	}
+	if app != nil {
+		specs = append(append([]trackerToolSpec(nil), trackerToolSpecs...), trackerToolSpec{"linked_pr_evidence", "Read metadata-only evidence for pull requests explicitly linked to this issue, and only if the project is connected to the same installed repository.", `{"type":"object","properties":{"project_id":{"type":"integer","minimum":1},"issue_id":{"type":"integer","minimum":1}},"required":["project_id","issue_id"],"additionalProperties":false}`})
+	}
+	for _, spec := range specs {
 		var schema any
 		if err := json.Unmarshal([]byte(spec.schema), &schema); err != nil {
 			return nil, nil, fmt.Errorf("decode %s schema: %w", spec.name, err)
@@ -72,7 +80,13 @@ func newTrackerMCP(ctx context.Context, gatewayURL, bearer, requestID string, cl
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: &readOnly, OpenWorldHint: &openWorld},
 		}
 		server.AddTool(tool, func(callCtx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			data, err := executeTrackerTool(callCtx, gatewayURL, bearer, requestID, request.Params.Name, request.Params.Arguments, client)
+			var data json.RawMessage
+			var err error
+			if request.Params.Name == "linked_pr_evidence" {
+				data, err = linkedPREvidence(callCtx, gatewayURL, bearer, requestID, request.Params.Arguments, client, app)
+			} else {
+				data, err = executeTrackerTool(callCtx, gatewayURL, bearer, requestID, request.Params.Name, request.Params.Arguments, client)
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -105,6 +119,188 @@ func newTrackerMCP(ctx context.Context, gatewayURL, bearer, requestID string, cl
 		definitions = append(definitions, openRouterTool{Type: "function", Function: openRouterToolDefinition{Name: tool.Name, Description: tool.Description, Parameters: parameters}})
 	}
 	return clientSession, definitions, nil
+}
+
+func linkedPREvidence(ctx context.Context, gatewayURL, bearerToken, requestID string, arguments json.RawMessage, client *http.Client, app *githubApp) (json.RawMessage, error) {
+	if app == nil {
+		return nil, errors.New("GitHub evidence is unavailable")
+	}
+	var args struct {
+		ProjectID uint64 `json:"project_id"`
+		IssueID   uint64 `json:"issue_id"`
+	}
+	if err := decodeToolArguments(arguments, &args); err != nil || args.ProjectID == 0 || args.IssueID == 0 {
+		return nil, errors.New("invalid project or issue ID")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	issueData, err := callGatewayJSON(ctx, client, gatewayURL, bearerToken, requestID, http.MethodGet, fmt.Sprintf("/issues/%d", args.IssueID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var issue struct {
+		ProjectID uint64 `json:"project_id"`
+	}
+	if json.Unmarshal(issueData, &issue) != nil || issue.ProjectID != args.ProjectID {
+		return nil, errors.New("issue does not belong to supplied project")
+	}
+	linksData, err := callGatewayJSON(ctx, client, gatewayURL, bearerToken, requestID, http.MethodGet, fmt.Sprintf("/issues/%d/pull-requests", args.IssueID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var links []struct {
+		RepositoryID uint64 `json:"repository_id"`
+		Number       uint64 `json:"number"`
+	}
+	if json.Unmarshal(linksData, &links) != nil {
+		return nil, errors.New("invalid issue pull request links response")
+	}
+	if len(links) == 0 {
+		return json.RawMessage(`[]`), nil
+	}
+	if len(links) > maxLinkedPRs {
+		return nil, errors.New("issue has too many linked pull requests")
+	}
+	repoData, err := callGatewayJSON(ctx, client, gatewayURL, bearerToken, requestID, http.MethodGet, fmt.Sprintf("/projects/%d/repository", args.ProjectID), nil)
+	if err != nil {
+		return nil, err
+	}
+	var connected *githubRepository
+	if string(repoData) != "null" {
+		var repo githubRepository
+		if json.Unmarshal(repoData, &repo) != nil || repo.ID == 0 {
+			return nil, errors.New("invalid project repository response")
+		}
+		connected = &repo
+	}
+	if connected == nil {
+		return nil, errors.New("project has no connected GitHub repository")
+	}
+	matchingLinks := links[:0]
+	for _, link := range links {
+		if link.Number == 0 || link.RepositoryID == 0 {
+			return nil, errors.New("invalid pull request link")
+		}
+		if link.RepositoryID == connected.ID {
+			matchingLinks = append(matchingLinks, link)
+		}
+	}
+	links = matchingLinks
+	if len(links) == 0 {
+		return json.RawMessage(`[]`), nil
+	}
+	token, err := app.installationToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	type evidence struct {
+		Number     uint64 `json:"number"`
+		Title      string `json:"title"`
+		State      string `json:"state"`
+		Draft      bool   `json:"draft"`
+		Merged     bool   `json:"merged"`
+		MergedAt   string `json:"merged_at,omitempty"`
+		UpdatedAt  string `json:"updated_at,omitempty"`
+		ObservedAt string `json:"observed_at"`
+		URL        string `json:"url"`
+		HeadSHA    string `json:"head_sha"`
+		Reviews    []struct {
+			State       string `json:"state"`
+			SubmittedAt string `json:"submitted_at"`
+		} `json:"reviews"`
+		Checks []struct {
+			Name        string `json:"name"`
+			Status      string `json:"status"`
+			Conclusion  string `json:"conclusion,omitempty"`
+			StartedAt   string `json:"started_at,omitempty"`
+			CompletedAt string `json:"completed_at,omitempty"`
+		} `json:"checks"`
+	}
+	out := make([]evidence, 0, len(links))
+	for _, link := range links {
+		prefix := "/repos/" + url.PathEscape(connected.Owner) + "/" + url.PathEscape(connected.Name) + "/pulls/" + strconv.FormatUint(link.Number, 10)
+		data, err := app.apiRequest(ctx, http.MethodGet, prefix, token)
+		if err != nil {
+			return nil, err
+		}
+		var pr struct {
+			Number    uint64 `json:"number"`
+			Title     string `json:"title"`
+			State     string `json:"state"`
+			Draft     bool   `json:"draft"`
+			HTMLURL   string `json:"html_url"`
+			Merged    bool   `json:"merged"`
+			MergedAt  string `json:"merged_at"`
+			UpdatedAt string `json:"updated_at"`
+			Head      struct {
+				SHA string `json:"sha"`
+			} `json:"head"`
+		}
+		if json.Unmarshal(data, &pr) != nil || pr.Number != link.Number || pr.HTMLURL == "" {
+			return nil, errors.New("invalid pull request response")
+		}
+		item := evidence{Number: pr.Number, Title: pr.Title, State: pr.State, Draft: pr.Draft, Merged: pr.Merged, MergedAt: pr.MergedAt, UpdatedAt: pr.UpdatedAt, ObservedAt: time.Now().UTC().Format(time.RFC3339), URL: pr.HTMLURL, HeadSHA: pr.Head.SHA}
+		reviewsData, err := app.apiRequest(ctx, http.MethodGet, prefix+"/reviews?per_page=10", token)
+		if err != nil {
+			return nil, err
+		}
+		var reviews []struct {
+			State       string `json:"state"`
+			SubmittedAt string `json:"submitted_at"`
+		}
+		if json.Unmarshal(reviewsData, &reviews) != nil {
+			return nil, errors.New("invalid pull request reviews response")
+		}
+		if len(reviews) > 10 {
+			reviews = reviews[:10]
+		}
+		for _, review := range reviews {
+			item.Reviews = append(item.Reviews, struct {
+				State       string `json:"state"`
+				SubmittedAt string `json:"submitted_at"`
+			}{review.State, review.SubmittedAt})
+		}
+		if pr.Head.SHA != "" {
+			checksData, err := app.apiRequest(ctx, http.MethodGet, "/repos/"+url.PathEscape(connected.Owner)+"/"+url.PathEscape(connected.Name)+"/commits/"+url.PathEscape(pr.Head.SHA)+"/check-runs?per_page=10", token)
+			if err != nil {
+				return nil, err
+			}
+			var checks struct {
+				CheckRuns []struct {
+					Name        string `json:"name"`
+					Status      string `json:"status"`
+					Conclusion  string `json:"conclusion"`
+					StartedAt   string `json:"started_at"`
+					CompletedAt string `json:"completed_at"`
+				} `json:"check_runs"`
+			}
+			if json.Unmarshal(checksData, &checks) != nil {
+				return nil, errors.New("invalid pull request checks response")
+			}
+			if len(checks.CheckRuns) > 10 {
+				checks.CheckRuns = checks.CheckRuns[:10]
+			}
+			for _, check := range checks.CheckRuns {
+				item.Checks = append(item.Checks, struct {
+					Name        string `json:"name"`
+					Status      string `json:"status"`
+					Conclusion  string `json:"conclusion,omitempty"`
+					StartedAt   string `json:"started_at,omitempty"`
+					CompletedAt string `json:"completed_at,omitempty"`
+				}{check.Name, check.Status, check.Conclusion, check.StartedAt, check.CompletedAt})
+			}
+		}
+		item.HeadSHA = ""
+		out = append(out, item)
+	}
+	encoded, err := json.Marshal(out)
+	if err != nil {
+		return nil, err
+	}
+	if len(encoded) > 20<<10 {
+		return nil, errors.New("pull request evidence exceeds tool limit")
+	}
+	return encoded, nil
 }
 
 func callMCPTool(ctx context.Context, session *mcp.ClientSession, name, arguments string) (string, error) {

@@ -379,6 +379,41 @@ func TestGatewayProtectsAndForwardsAIChat(t *testing.T) {
 	}
 }
 
+func TestGitHubRepositoryPickerProxyRequiresAuthentication(t *testing.T) {
+	secret := []byte(strings.Repeat("s", 32))
+	var seenPath string
+	aiService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		_, _ = w.Write([]byte(`[{"id":42,"owner":"acme","name":"tracker"}]`))
+	}))
+	defer aiService.Close()
+	authService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/session" {
+			_, _ = w.Write([]byte(`{"password_reset_required":false,"password_reset_version":0}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer authService.Close()
+	handler := newGatewayHandler(secret, map[string]string{"auth": authService.URL, "ai": aiService.URL}, ratelimit.New(10, 1), http.DefaultTransport)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/github/repositories", nil))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d", w.Code)
+	}
+	token, err := auth.IssueToken(87, "member", secret, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/github/repositories", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || seenPath != "/github/repositories" {
+		t.Fatalf("status=%d path=%q body=%s", w.Code, seenPath, w.Body.String())
+	}
+}
+
 func TestCORSPreflightRequiresExactAllowedOrigin(t *testing.T) {
 	var nextCalled bool
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { nextCalled = true })

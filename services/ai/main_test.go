@@ -50,6 +50,54 @@ func TestChatHandlerCallsOpenRouterAndReturnsReply(t *testing.T) {
 	}
 }
 
+func TestChatDoesNotExposeUnexecutedToolSyntaxAsAssistantReply(t *testing.T) {
+	const providerReply = `<tool_call><function=list_pull_requests><parameter=project_id>28</parameter></function></tool_call>`
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"model":"test-model","choices":[{"message":{"role":"assistant","content":"`+providerReply+`"}}]}`)
+	}))
+	defer provider.Close()
+
+	handler := newAIHandler("test-secret", provider.URL, "test-model", provider.Client())
+	req := httptest.NewRequest(http.MethodPost, "/ai/chat", strings.NewReader(`{"message":"What is the GitHub status?"}`))
+	req.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var result chatResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode chat result: %v", err)
+	}
+	if strings.Contains(result.Reply, "<tool_call") || strings.Contains(result.Reply, "list_pull_requests") {
+		t.Fatalf("unexecuted tool syntax leaked to user: %q", result.Reply)
+	}
+	if !strings.Contains(result.Reply, "Please try again") || !strings.Contains(result.Reply, "explicitly linked") {
+		t.Fatalf("unexpected safe fallback: %q", result.Reply)
+	}
+}
+
+func TestContainsUnexecutedToolCallRequiresCompleteMarkup(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "complete call", content: `<tool_call><function=list_pull_requests><parameter=project_id>28</parameter></function></tool_call>`, want: true},
+		{name: "discussion of opening tag", content: `The string <tool_call> can appear in an example.`, want: false},
+		{name: "discussion of function marker", content: `Use the syntax <function=name> in the protocol.`, want: false},
+		{name: "incomplete markup", content: `<tool_call><function=list_pull_requests>`, want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := containsUnexecutedToolCall(test.content); got != test.want {
+				t.Fatalf("containsUnexecutedToolCall() = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
 func TestChatRunsAuthorizedTrackerToolAndReturnsGroundedReply(t *testing.T) {
 	const callerToken = "caller-jwt-never-send-to-provider"
 	var providerCalls int

@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,162 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/adil/bug-issue-tracker/pkg/lru"
 )
+
+func pullRequestProjectServer(admin, repository bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/projects/4/members/check":
+			if r.URL.Query().Get("require_admin") == "true" {
+				_, _ = w.Write([]byte(`{"member":` + map[bool]string{true: "true", false: "false"}[admin] + `,"admin":` + map[bool]string{true: "true", false: "false"}[admin] + `}`))
+			} else {
+				_, _ = w.Write([]byte(`{"member":true}`))
+			}
+		case "/projects/4/repository":
+			if !repository {
+				_, _ = w.Write([]byte(`null`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"id":987,"owner":"acme","name":"bugs"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func TestIssuePullRequestLinksCRUDAndRepositoryOwnership(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server := pullRequestProjectServer(true, true)
+	defer server.Close()
+	h := &issueHandler{db: db, projectURL: server.URL, client: server.Client()}
+
+	mock.ExpectQuery("SELECT project_id FROM issues WHERE id=").WithArgs(uint64(30)).WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow(4))
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id FROM issues WHERE id=.*FOR UPDATE").WithArgs(uint64(30)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(30))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM issue_pull_requests WHERE issue_id=").WithArgs(uint64(30)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("INSERT INTO issue_pull_requests").WithArgs(uint64(30), uint64(987), uint64(42), "acme", "bugs").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+	w := sendIssueRequest(h, http.MethodPost, "/issues/30/pull-requests", `{"number":42,"repository_id":123,"url":"https://evil.invalid"}`)
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"repository_id":987`) || !strings.Contains(w.Body.String(), `"html_url":"https://github.com/acme/bugs/pull/42"`) {
+		t.Fatalf("create status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	mock.ExpectQuery("SELECT project_id FROM issues WHERE id=").WithArgs(uint64(30)).WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow(4))
+	mock.ExpectQuery("SELECT repository_id,number,owner,repository_name FROM issue_pull_requests WHERE issue_id=.*ORDER BY repository_id,number LIMIT").WithArgs(uint64(30), 5).WillReturnRows(sqlmock.NewRows([]string{"repository_id", "number", "owner", "repository_name"}).AddRow(987, 42, "acme", "bugs"))
+	w = sendIssueRequest(h, http.MethodGet, "/issues/30/pull-requests", "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"number":42`) {
+		t.Fatalf("list status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	mock.ExpectQuery("SELECT project_id FROM issues WHERE id=").WithArgs(uint64(30)).WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow(4))
+	mock.ExpectExec("DELETE FROM issue_pull_requests WHERE issue_id=.*repository_id=.*number=").WithArgs(uint64(30), uint64(987), uint64(42)).WillReturnResult(sqlmock.NewResult(0, 1))
+	w = sendIssueRequest(h, http.MethodDelete, "/issues/30/pull-requests/42?repository_id=987", "")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIssuePullRequestLinkRequiresAdminAndConnectedRepository(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		admin, repository bool
+		want              int
+	}{
+		{name: "member forbidden", admin: false, repository: true, want: http.StatusForbidden},
+		{name: "no repository", admin: true, repository: false, want: http.StatusConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			server := pullRequestProjectServer(test.admin, test.repository)
+			defer server.Close()
+			h := &issueHandler{db: db, projectURL: server.URL, client: server.Client()}
+			mock.ExpectQuery("SELECT project_id FROM issues WHERE id=").WithArgs(uint64(30)).WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow(4))
+			w := sendIssueRequest(h, http.MethodPost, "/issues/30/pull-requests", `{"number":42}`)
+			if w.Code != test.want {
+				t.Fatalf("status=%d body=%s want=%d", w.Code, w.Body.String(), test.want)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestIssueHistoricalPullRequestCanBeUnlinkedAfterRepositoryDisconnect(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server := pullRequestProjectServer(true, false)
+	defer server.Close()
+	h := &issueHandler{db: db, projectURL: server.URL, client: server.Client()}
+	mock.ExpectQuery("SELECT project_id FROM issues WHERE id=").WithArgs(uint64(30)).WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow(4))
+	mock.ExpectExec("DELETE FROM issue_pull_requests WHERE issue_id=.*repository_id=.*number=").WithArgs(uint64(30), uint64(987), uint64(42)).WillReturnResult(sqlmock.NewResult(0, 1))
+	w := sendIssueRequest(h, http.MethodDelete, "/issues/30/pull-requests/42?repository_id=987", "")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("delete historical link status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIssuePullRequestNumberMustFitPositiveInt64(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server := pullRequestProjectServer(true, true)
+	defer server.Close()
+	h := &issueHandler{db: db, projectURL: server.URL, client: server.Client()}
+	for _, body := range []string{`{"number":0}`, `{"number":9223372036854775808}`} {
+		mock.ExpectQuery("SELECT project_id FROM issues WHERE id=").WithArgs(uint64(30)).WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow(4))
+		w := sendIssueRequest(h, http.MethodPost, "/issues/30/pull-requests", body)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("body=%s status=%d", body, w.Code)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIssuePullRequestDuplicateReturnsConflict(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	server := pullRequestProjectServer(true, true)
+	defer server.Close()
+	h := &issueHandler{db: db, projectURL: server.URL, client: server.Client()}
+	mock.ExpectQuery("SELECT project_id FROM issues WHERE id=").WithArgs(uint64(30)).WillReturnRows(sqlmock.NewRows([]string{"project_id"}).AddRow(4))
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id FROM issues WHERE id=.*FOR UPDATE").WithArgs(uint64(30)).WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(30))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM issue_pull_requests WHERE issue_id=").WithArgs(uint64(30)).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectExec("INSERT INTO issue_pull_requests").WithArgs(uint64(30), uint64(987), uint64(42), "acme", "bugs").WillReturnError(errors.New("Duplicate entry '30-987-42' for key 'PRIMARY'"))
+	mock.ExpectRollback()
+	w := sendIssueRequest(h, http.MethodPost, "/issues/30/pull-requests", `{"number":42}`)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func membershipServer(member bool) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -11,7 +11,11 @@ paths:
         and is never returned to the caller. When the caller has an authenticated
         session, the model may invoke a bounded allowlist of read-only tools that
         retrieve caller-authorized records through the Gateway from Auth,
-        Project, Issue, and Activity APIs. It does not yet retrieve GitHub data.
+          Project, Issue, and Activity APIs. When the optional GitHub App is
+          configured, it may retrieve bounded metadata for explicitly linked
+          pull requests in a connected installed repository when explicitly
+          enabled for OpenRouter processing. It never reads
+          repository Contents or diffs.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -40,6 +44,28 @@ paths:
         '429': { description: OpenRouter rate limit reached }
         '503': { description: OpenRouter is not configured }
         '502': { description: OpenRouter request failed or returned an invalid response }
+  /github/repositories:
+    get:
+      summary: List repositories available to the configured GitHub App installation
+      description: Returns only repository IDs and display names from the installation. Credentials and installation tokens remain server-side.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Installed repositories available for project selection
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 100
+                items:
+                  type: object
+                  required: [id, owner, name]
+                  properties:
+                    id: { type: integer, minimum: 1 }
+                    owner: { type: string }
+                    name: { type: string }
+        '503': { description: GitHub App is not configured }
+        '502': { description: GitHub installation repository list unavailable }
 components:
   securitySchemes:
     bearerAuth:

@@ -271,6 +271,8 @@ func gatewayRoute(routes map[string]string, path string) (target string, protect
 		return routes["activity"], true, routes["activity"] != ""
 	case path == "/ai/chat":
 		return routes["ai"], true, routes["ai"] != ""
+	case path == "/github/repositories":
+		return routes["ai"], true, routes["ai"] != ""
 	default:
 		return "", false, false
 	}

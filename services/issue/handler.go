@@ -11,7 +11,9 @@ import (
 	"github.com/adil/bug-issue-tracker/pkg/lru"
 	"github.com/adil/bug-issue-tracker/pkg/trie"
 	"github.com/nats-io/nats.go"
+	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -170,6 +172,10 @@ func (h *issueHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.Contains(path, "/") {
+		if strings.HasSuffix(path, "/pull-requests") || strings.Contains(path, "/pull-requests/") {
+			h.pullRequests(w, r, id, projectID, uid)
+			return
+		}
 		if strings.HasSuffix(path, "/dependencies") {
 			h.dependencies(w, r, id, projectID)
 			return
@@ -178,6 +184,199 @@ func (h *issueHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.item(w, r, id, projectID, uid)
+}
+
+const maxIssuePullRequests = 5
+
+type issuePullRequest struct {
+	RepositoryID uint64 `json:"repository_id"`
+	Number       uint64 `json:"number"`
+	Owner        string `json:"owner"`
+	Repo         string `json:"repo"`
+	HTMLURL      string `json:"html_url"`
+}
+
+func (h *issueHandler) pullRequests(w http.ResponseWriter, r *http.Request, issueID, projectID, uid uint64) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/issues/"), "/")
+	parts := strings.Split(path, "/")
+	if len(parts) < 2 || parts[1] != "pull-requests" || len(parts) > 3 {
+		http.NotFound(w, r)
+		return
+	}
+	if len(parts) == 3 {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		number, err := strconv.ParseUint(parts[2], 10, 64)
+		if err != nil || number == 0 || number > math.MaxInt64 {
+			http.Error(w, "invalid pull request number", http.StatusBadRequest)
+			return
+		}
+		if !h.projectAdmin(r, projectID, uid) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		repositoryID, err := strconv.ParseUint(r.URL.Query().Get("repository_id"), 10, 64)
+		if err != nil || repositoryID == 0 {
+			http.Error(w, "repository_id is required", http.StatusBadRequest)
+			return
+		}
+		result, err := h.db.ExecContext(r.Context(), "DELETE FROM issue_pull_requests WHERE issue_id=? AND repository_id=? AND number=?", issueID, repositoryID, number)
+		if err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		if count == 0 {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		rows, err := h.db.QueryContext(r.Context(), "SELECT repository_id,number,owner,repository_name FROM issue_pull_requests WHERE issue_id=? ORDER BY repository_id,number LIMIT ?", issueID, maxIssuePullRequests)
+		if err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		links := make([]issuePullRequest, 0)
+		for rows.Next() {
+			var link issuePullRequest
+			if err := rows.Scan(&link.RepositoryID, &link.Number, &link.Owner, &link.Repo); err != nil {
+				http.Error(w, "database error", http.StatusInternalServerError)
+				return
+			}
+			link.HTMLURL = fmt.Sprintf("https://github.com/%s/%s/pull/%d", link.Owner, link.Repo, link.Number)
+			links = append(links, link)
+		}
+		if err := rows.Err(); err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		writeIssue(w, http.StatusOK, links)
+	case http.MethodPost:
+		if !h.projectAdmin(r, projectID, uid) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		var input struct {
+			Number uint64 `json:"number"`
+		}
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input) != nil || input.Number == 0 || input.Number > math.MaxInt64 {
+			http.Error(w, "invalid pull request number", http.StatusBadRequest)
+			return
+		}
+		repo, ok := h.connectedRepository(r, w, projectID, uid)
+		if !ok {
+			return
+		}
+		tx, err := h.db.BeginTx(r.Context(), nil)
+		if err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback()
+		var lockedIssue uint64
+		if err := tx.QueryRowContext(r.Context(), "SELECT id FROM issues WHERE id=? FOR UPDATE", issueID).Scan(&lockedIssue); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		var count int
+		if err := tx.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM issue_pull_requests WHERE issue_id=?", issueID).Scan(&count); err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		if count >= maxIssuePullRequests {
+			http.Error(w, "issue pull request limit reached", http.StatusConflict)
+			return
+		}
+		if _, err := tx.ExecContext(r.Context(), "INSERT INTO issue_pull_requests(issue_id,repository_id,number,owner,repository_name) VALUES (?,?,?,?,?)", issueID, repo.ID, input.Number, repo.Owner, repo.Name); err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+				http.Error(w, "pull request already linked", http.StatusConflict)
+				return
+			}
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		if err := tx.Commit(); err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		writeIssue(w, http.StatusCreated, makeIssuePullRequest(repo, input.Number))
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+type connectedRepository struct {
+	ID    uint64 `json:"id"`
+	Owner string `json:"owner"`
+	Name  string `json:"name"`
+}
+
+func makeIssuePullRequest(repo connectedRepository, number uint64) issuePullRequest {
+	return issuePullRequest{RepositoryID: repo.ID, Number: number, Owner: repo.Owner, Repo: repo.Name, HTMLURL: fmt.Sprintf("https://github.com/%s/%s/pull/%d", repo.Owner, repo.Name, number)}
+}
+
+func (h *issueHandler) projectCall(r *http.Request, method, path string, uid uint64) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(r.Context(), method, strings.TrimRight(h.projectURL, "/")+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-User-ID", strconv.FormatUint(uid, 10))
+	if role := r.Header.Get("X-User-Role"); role != "" {
+		req.Header.Set("X-User-Role", role)
+	}
+	if requestID := r.Header.Get("X-Request-ID"); requestID != "" {
+		req.Header.Set("X-Request-ID", requestID)
+	}
+	return h.client.Do(req)
+}
+
+func (h *issueHandler) projectAdmin(r *http.Request, projectID, uid uint64) bool {
+	resp, err := h.projectCall(r, http.MethodGet, fmt.Sprintf("/projects/%d/members/check?require_admin=true", projectID), uid)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var result struct {
+		Admin bool `json:"admin"`
+	}
+	return json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&result) == nil && result.Admin
+}
+
+func (h *issueHandler) connectedRepository(r *http.Request, w http.ResponseWriter, projectID, uid uint64) (connectedRepository, bool) {
+	resp, err := h.projectCall(r, http.MethodGet, fmt.Sprintf("/projects/%d/repository", projectID), uid)
+	if err != nil {
+		http.Error(w, "project service unavailable", http.StatusBadGateway)
+		return connectedRepository{}, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, "project repository unavailable", http.StatusBadGateway)
+		return connectedRepository{}, false
+	}
+	var repo *connectedRepository
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&repo); err != nil {
+		http.Error(w, "invalid project repository response", http.StatusBadGateway)
+		return connectedRepository{}, false
+	}
+	if repo == nil || repo.ID == 0 || repo.Owner == "" || repo.Name == "" {
+		http.Error(w, "project has no connected repository", http.StatusConflict)
+		return connectedRepository{}, false
+	}
+	return *repo, true
 }
 
 func (h *issueHandler) labelAutocomplete(w http.ResponseWriter, r *http.Request, uid uint64) {

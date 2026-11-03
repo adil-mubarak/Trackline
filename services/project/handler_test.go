@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -9,6 +11,70 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
+
+type repositoryVerifierFunc func(context.Context, uint64) (githubRepository, error)
+
+func (f repositoryVerifierFunc) VerifyRepository(ctx context.Context, id uint64) (githubRepository, error) {
+	return f(ctx, id)
+}
+
+func TestRepositoryConnectionVerifiesCanonicalIdentityAndRequiresAdmin(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	h := &projectHandler{db: db, repoVerifier: repositoryVerifierFunc(func(_ context.Context, id uint64) (githubRepository, error) {
+		if id != 42 {
+			t.Fatalf("verified id=%d", id)
+		}
+		return githubRepository{ID: 42, Owner: "acme", Name: "tracker"}, nil
+	})}
+	adminQuery := "SELECT EXISTS(SELECT 1 FROM project_members m JOIN projects p ON p.id=m.project_id WHERE m.project_id=? AND m.user_id=? AND m.role='admin' AND p.deleted_at IS NULL)"
+	mock.ExpectQuery(regexp.QuoteMeta(adminQuery)).WithArgs(uint64(9), uint64(5)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT EXISTS(SELECT 1 FROM projects WHERE id=? AND deleted_at IS NULL)")).WithArgs(uint64(9)).WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+	mock.ExpectExec("INSERT INTO project_repositories").WithArgs(uint64(9), uint64(42), "acme", "tracker").WillReturnResult(sqlmock.NewResult(0, 1))
+	w := projectRequest(h, http.MethodPut, "/projects/9/repository", "5", `{"github_repository_id":42,"owner":"fake","name":"untrusted"}`)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"owner":"acme"`) {
+		t.Fatalf("repository response %d %s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateWithRepositoryFailsClosedWhenVerifierUnconfigured(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	h := &projectHandler{db: db}
+	w := projectRequest(h, http.MethodPost, "/projects", "5", `{"name":"Launch","github_repository_id":42}`)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAIRepositoryVerifierUsesInstalledRepositoryResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/internal/github/repositories/42" {
+			t.Errorf("request %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = fmt.Fprint(w, `{"id":42,"owner":"acme","name":"tracker"}`)
+	}))
+	defer server.Close()
+	repo, err := (&aiRepositoryVerifier{baseURL: server.URL, client: server.Client()}).VerifyRepository(context.Background(), 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.ID != 42 || repo.Owner != "acme" || repo.Name != "tracker" {
+		t.Fatalf("repository=%+v", repo)
+	}
+}
 
 func projectRequest(h *projectHandler, method, path, userID, body string) *httptest.ResponseRecorder {
 	return projectRequestWithRole(h, method, path, userID, "member", body)

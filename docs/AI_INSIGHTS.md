@@ -82,10 +82,11 @@ checks, and recorded review approval are evidence of those events only—not a
 guarantee that requirements were met or that one individual was solely
 responsible.
 
-The planned MCP adapter exposes only the selected GitHub evidence tools to the
-AI. It should use a tightly scoped GitHub App/API integration rather than
-giving the model a general-purpose GitHub credential or unrestricted GitHub
-MCP server.
+The AI service's in-process MCP adapter exposes the selected GitHub evidence
+tool only when its GitHub App is configured. It uses the GitHub App/API rather
+than giving the model a general-purpose credential or unrestricted GitHub MCP
+server. Setup and deployment variables are documented in
+[`github-app.md`](github-app.md).
 
 - Connect only organization-approved repositories. Prefer a GitHub App
   installed on selected repositories with the minimum read-only permissions
@@ -115,6 +116,9 @@ MCP server.
   issue-to-PR links if the existing APIs do not support them. The AI adapter
   calls those APIs and GitHub; it never reads service tables. Repository
   configuration belongs to Project, and PR links belong to Issue.
+- Before production enablement, approve the App's installed-repository scope and
+  OpenRouter processing of GitHub evidence. GitHub credentials being configured
+  is not itself approval to send that evidence to the model provider.
 
 ### Model provider: OpenRouter
 

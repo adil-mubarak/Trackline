@@ -19,6 +19,7 @@ import { CSS } from '@dnd-kit/utilities'
 import ChatPage from './ChatPage'
 
 export type Project = { id: number; name: string; description: string; owner_id?: number; owner_username?: string }
+export type GitHubRepository = { id: number; owner: string; name: string }
 export type Issue = {
   id: number
   project_id: number
@@ -107,6 +108,9 @@ export type ProjectBoardProps = {
   onOpenBoard: () => void
   onAddProject: () => void
   onCreateProject: (event: React.FormEvent<HTMLFormElement>, memberIDs: number[]) => Promise<boolean>
+  onLoadGitHubRepositories: () => Promise<GitHubRepository[]>
+  onGetProjectRepository: (projectID: number) => Promise<GitHubRepository | null>
+  onSetProjectRepository: (projectID: number, repositoryID: number | null) => Promise<void>
   onDeleteProject: (project: Project) => Promise<void>
   onDeleteIssue: (issue: Issue) => Promise<void>
   onLoadUserDirectory: (afterID: number | null) => Promise<UserDirectoryPage>
@@ -133,6 +137,7 @@ export function ProjectBoard(props: ProjectBoardProps) {
   const [view, setView] = useState<'board' | 'list'>('board')
   const [sortDescending, setSortDescending] = useState(true)
   const [copilotOpen, setCopilotOpen] = useState(false)
+  const [repoSettingsOpen, setRepoSettingsOpen] = useState(false)
   const [addMembersOpen, setAddMembersOpen] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'project'; project: Project } | { kind: 'issue'; issue: Issue } | null>(null)
   const addMembersTriggerRef = useRef<HTMLButtonElement>(null)
@@ -205,7 +210,7 @@ export function ProjectBoard(props: ProjectBoardProps) {
         onLogout={props.onLogout}
       />
       <div className="main-area">
-        <TopBar projectName={props.selectedProject?.name} section={screenLabel(props.screen)} query={props.query} onQueryChange={props.onQueryChange} onAddIssue={props.onAddIssue} onOpenCopilot={() => setCopilotOpen(true)} copilotTriggerRef={copilotTriggerRef} onShowProjects={props.onShowProjects} onOpenBoard={props.onOpenBoard} onOpenCurrentSection={() => {
+        <TopBar projectName={props.selectedProject?.name} section={screenLabel(props.screen)} query={props.query} onQueryChange={props.onQueryChange} onAddIssue={props.onAddIssue} onOpenCopilot={() => setCopilotOpen(true)} copilotTriggerRef={copilotTriggerRef} canManageRepository={Boolean(props.selectedProject && (props.globalRole === 'admin' || props.projectRole === 'admin'))} onManageRepository={() => setRepoSettingsOpen(true)} onShowProjects={props.onShowProjects} onOpenBoard={props.onOpenBoard} onOpenCurrentSection={() => {
           if (props.screen === 'projects') props.onShowProjects()
           else if (props.screen === 'board') props.onOpenBoard()
           else if (props.screen === 'admin') props.onShowAdmin()
@@ -271,12 +276,13 @@ export function ProjectBoard(props: ProjectBoardProps) {
               ) : null}
             </>
           )}
-          </> : props.screen === 'projects' ? <ProjectsDirectory projects={props.projects} adminProjects={props.adminProjects} adminProjectsLoading={props.adminProjectsLoading} adminProjectsError={props.adminProjectsError} isGlobalAdmin={props.globalRole === 'admin'} selectedProjectId={props.selectedProjectId} currentUserID={props.currentUserID} error={props.error} onDismissError={props.onDismissError} onSelectProject={id => { props.onSelectProject(id); props.onOpenBoard() }} onDeleteProject={project => setPendingDelete({ kind: 'project', project })} onLoadUserDirectory={props.onLoadUserDirectory} onCreateProject={props.onCreateProject} /> : props.screen === 'calendar' ? <ProjectCalendar project={props.selectedProject} issues={props.calendarIssues} loading={props.calendarLoading} onRangeChange={props.onCalendarRangeChange} onOpenIssue={props.onOpenIssue} /> : props.screen === 'admin' ? <ProjectAdminPanel members={props.members} role={props.projectRole} globalRole={props.globalRole} onSearchUsers={props.onSearchUsers} onAddMember={props.onAddMember} onRemoveMember={props.onRemoveMember} onSetMemberRole={props.onSetMemberRole} /> : props.screen === 'users' ? <UserManagementPage users={props.adminUsers} projects={props.adminProjects} loading={props.adminUsersLoading} error={props.adminUsersError} hasMore={props.adminUsersHasMore} managedUserID={props.managedUserID} managedProjectIDs={props.managedUserProjectIDs} managedProjectsLoading={props.managedUserProjectsLoading} managedProjectsError={props.managedUserProjectsError} onLoadMore={props.onLoadMoreUsers} onResetPassword={props.onResetUserPassword} onCreateUser={props.onCreateUser} onSetUserActive={props.onSetUserActive} onManageProjects={props.onManageUserProjects} onToggleProject={props.onToggleUserProject} currentUserID={props.currentUserID} /> : props.screen === 'my-issues' ? <MyIssuesPage issues={props.myIssues} projects={props.projects} loading={props.myIssuesLoading} error={props.myIssuesError} currentUserID={props.currentUserID} onOpenIssue={props.onOpenIssue} /> : props.screen === 'activity' ? <ActivityPage items={props.activityItems} projects={props.projects} loading={props.activityLoading} partialErrors={props.activityPartialErrors} /> : <AnalyticsPage project={props.selectedProject} snapshot={props.analytics} loading={props.analyticsLoading} error={props.analyticsError} />}
+          </> : props.screen === 'projects' ? <ProjectsDirectory projects={props.projects} adminProjects={props.adminProjects} adminProjectsLoading={props.adminProjectsLoading} adminProjectsError={props.adminProjectsError} isGlobalAdmin={props.globalRole === 'admin'} selectedProjectId={props.selectedProjectId} currentUserID={props.currentUserID} error={props.error} onDismissError={props.onDismissError} onSelectProject={id => { props.onSelectProject(id); props.onOpenBoard() }} onDeleteProject={project => setPendingDelete({ kind: 'project', project })} onLoadUserDirectory={props.onLoadUserDirectory} onCreateProject={props.onCreateProject} onLoadGitHubRepositories={props.onLoadGitHubRepositories} onGetProjectRepository={props.onGetProjectRepository} onSetProjectRepository={props.onSetProjectRepository} /> : props.screen === 'calendar' ? <ProjectCalendar project={props.selectedProject} issues={props.calendarIssues} loading={props.calendarLoading} onRangeChange={props.onCalendarRangeChange} onOpenIssue={props.onOpenIssue} /> : props.screen === 'admin' ? <ProjectAdminPanel members={props.members} role={props.projectRole} globalRole={props.globalRole} onSearchUsers={props.onSearchUsers} onAddMember={props.onAddMember} onRemoveMember={props.onRemoveMember} onSetMemberRole={props.onSetMemberRole} /> : props.screen === 'users' ? <UserManagementPage users={props.adminUsers} projects={props.adminProjects} loading={props.adminUsersLoading} error={props.adminUsersError} hasMore={props.adminUsersHasMore} managedUserID={props.managedUserID} managedProjectIDs={props.managedUserProjectIDs} managedProjectsLoading={props.managedUserProjectsLoading} managedProjectsError={props.managedUserProjectsError} onLoadMore={props.onLoadMoreUsers} onResetPassword={props.onResetUserPassword} onCreateUser={props.onCreateUser} onSetUserActive={props.onSetUserActive} onManageProjects={props.onManageUserProjects} onToggleProject={props.onToggleUserProject} currentUserID={props.currentUserID} /> : props.screen === 'my-issues' ? <MyIssuesPage issues={props.myIssues} projects={props.projects} loading={props.myIssuesLoading} error={props.myIssuesError} currentUserID={props.currentUserID} onOpenIssue={props.onOpenIssue} /> : props.screen === 'activity' ? <ActivityPage items={props.activityItems} projects={props.projects} loading={props.activityLoading} partialErrors={props.activityPartialErrors} /> : <AnalyticsPage project={props.selectedProject} snapshot={props.analytics} loading={props.analyticsLoading} error={props.analyticsError} />}
         </main>
       </div>
       {copilotOpen && <aside className="ai-copilot-panel" aria-label="AI Copilot">
         <ChatPage presentation="panel" onAsk={props.onAskTrackerAssistant} onClose={closeCopilot} />
       </aside>}
+      {repoSettingsOpen && props.selectedProject && <GitHubRepositorySettings project={props.selectedProject} onLoadRepositories={props.onLoadGitHubRepositories} onGetRepository={props.onGetProjectRepository} onSetRepository={props.onSetProjectRepository} onClose={() => setRepoSettingsOpen(false)} />}
       {addMembersOpen && <AddMembersModal members={props.members} currentUserID={props.currentUserID} onLoadUserDirectory={props.onLoadUserDirectory} onAddMember={props.onAddMember} onClose={closeAddMembers} />}
       {pendingDelete && <DeleteConfirmationDialog
         title={pendingDelete.kind === 'project' ? `Delete project “${pendingDelete.project.name}”?` : 'Delete this issue?'}
@@ -446,7 +452,7 @@ function Sidebar({
   )
 }
 
-function TopBar({ projectName, section, query, onQueryChange, onAddIssue, onOpenCopilot, copilotTriggerRef, onShowProjects, onOpenBoard, onOpenCurrentSection }: {
+function TopBar({ projectName, section, query, onQueryChange, onAddIssue, onOpenCopilot, copilotTriggerRef, canManageRepository, onManageRepository, onShowProjects, onOpenBoard, onOpenCurrentSection }: {
   projectName?: string
   section: string
   query: string
@@ -454,6 +460,8 @@ function TopBar({ projectName, section, query, onQueryChange, onAddIssue, onOpen
   onAddIssue: (status?: string) => void
   onOpenCopilot: () => void
   copilotTriggerRef: React.Ref<HTMLButtonElement>
+  canManageRepository: boolean
+  onManageRepository: () => void
   onShowProjects: () => void
   onOpenBoard: () => void
   onOpenCurrentSection: () => void
@@ -479,6 +487,7 @@ function TopBar({ projectName, section, query, onQueryChange, onAddIssue, onOpen
         <button className="icon-button" type="button" aria-label="Help" title="Not available yet" disabled><span className="material-symbols-outlined" aria-hidden="true">help</span></button>
         <span className="topbar-divider" />
         <button ref={copilotTriggerRef} className="secondary-button ask-ai-button" type="button" onClick={onOpenCopilot}><span className="material-symbols-outlined" aria-hidden="true">auto_awesome</span>Ask AI</button>
+        {canManageRepository && <button className="secondary-button repository-settings-button" type="button" onClick={onManageRepository}><span className="material-symbols-outlined" aria-hidden="true">link</span>GitHub</button>}
         <button className="primary-button" type="button" onClick={() => onAddIssue()}>
           <span className="material-symbols-outlined" aria-hidden="true">add</span>New issue
         </button>
@@ -514,6 +523,94 @@ function ProjectHeader({ project, openCount, completedCount, highCount, canManag
       </div>
     </section>
   )
+}
+
+function GitHubRepositorySettings({ project, onLoadRepositories, onGetRepository, onSetRepository, onClose }: {
+  project: Project
+  onLoadRepositories: () => Promise<GitHubRepository[]>
+  onGetRepository: (projectID: number) => Promise<GitHubRepository | null>
+  onSetRepository: (projectID: number, repositoryID: number | null) => Promise<void>
+  onClose: () => void
+}) {
+  const [repositories, setRepositories] = useState<GitHubRepository[]>([])
+  const [selectedRepositoryID, setSelectedRepositoryID] = useState('')
+  const [currentRepository, setCurrentRepository] = useState<GitHubRepository | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const dialogRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null
+    const dialog = dialogRef.current
+    const focusable = dialog?.querySelector<HTMLElement>('button:not([disabled]), select:not([disabled])')
+    focusable?.focus()
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+        return
+      }
+      if (event.key !== 'Tab' || !dialog) return
+      const items = dialog.querySelectorAll<HTMLElement>('button:not([disabled]), select:not([disabled])')
+      const first = items[0]
+      const last = items[items.length - 1]
+      if (!first || !last) return
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      previousFocus?.focus()
+    }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    Promise.allSettled([onLoadRepositories(), onGetRepository(project.id)]).then(([availableResult, currentResult]) => {
+      if (!active) return
+      if (availableResult.status === 'fulfilled') setRepositories(availableResult.value)
+      else setError(availableResult.reason instanceof Error ? availableResult.reason.message : 'Installed repositories are unavailable.')
+      if (currentResult.status === 'fulfilled') {
+        setCurrentRepository(currentResult.value)
+        setSelectedRepositoryID(currentResult.value ? String(currentResult.value.id) : '')
+      } else setError(currentResult.reason instanceof Error ? currentResult.reason.message : 'Could not load the project repository.')
+    }).finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [project.id, onLoadRepositories, onGetRepository])
+
+  async function save(repositoryID: number | null) {
+    setSaving(true)
+    setError('')
+    try {
+      await onSetRepository(project.id, repositoryID)
+      setCurrentRepository(repositoryID === null ? null : repositories.find(item => item.id === repositoryID) || null)
+      onClose()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not update the project repository.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return <div className="dialog-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
+    <section ref={dialogRef} className="dialog-card github-repository-dialog" role="dialog" aria-modal="true" aria-labelledby="github-repository-title" tabIndex={-1}>
+      <div className="dialog-heading"><div><p className="eyebrow">Project settings</p><h2 id="github-repository-title">GitHub repository</h2><p>Choose only a repository installed for Trackline’s approved GitHub App.</p></div><button type="button" className="icon-button" aria-label="Close repository settings" onClick={onClose}><span className="material-symbols-outlined" aria-hidden="true">close</span></button></div>
+      {loading ? <p role="status" className="state-message">Loading installed repositories…</p> : <>
+        {error && <p className="error-banner" role="alert">{error}</p>}
+        <label className="github-repository-select">Installed repository<select value={selectedRepositoryID} onChange={event => setSelectedRepositoryID(event.target.value)}><option value="">Select a repository</option>{repositories.map(repository => <option key={repository.id} value={repository.id}>{repository.owner}/{repository.name}</option>)}</select></label>
+        <p className="github-connection-note">Currently connected: {currentRepository ? `${currentRepository.owner}/${currentRepository.name}` : 'None'}</p>
+        {!repositories.length && <p className="github-connection-note">No repositories are available. Check the GitHub App installation and its repository scope.</p>}
+        <div className="dialog-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button type="button" className="text-button" disabled={saving || !currentRepository} onClick={() => void save(null)}>Disconnect</button><button type="button" className="primary-button" disabled={saving || !selectedRepositoryID} onClick={() => void save(Number(selectedRepositoryID))}>{saving ? 'Saving…' : 'Save repository'}</button></div>
+      </>}
+    </section>
+  </div>
 }
 
 function AddMembersModal({ members, currentUserID, onLoadUserDirectory, onAddMember, onClose }: {
@@ -637,7 +734,7 @@ function AddMembersModal({ members, currentUserID, onLoadUserDirectory, onAddMem
   </div>
 }
 
-function ProjectsDirectory({ projects, adminProjects, adminProjectsLoading, adminProjectsError, isGlobalAdmin, selectedProjectId, currentUserID, error, onDismissError, onSelectProject, onDeleteProject, onLoadUserDirectory, onCreateProject }: {
+function ProjectsDirectory({ projects, adminProjects, adminProjectsLoading, adminProjectsError, isGlobalAdmin, selectedProjectId, currentUserID, error, onDismissError, onSelectProject, onDeleteProject, onLoadUserDirectory, onCreateProject, onLoadGitHubRepositories, onGetProjectRepository, onSetProjectRepository }: {
   projects: Project[]
   adminProjects: Project[]
   adminProjectsLoading: boolean
@@ -651,6 +748,9 @@ function ProjectsDirectory({ projects, adminProjects, adminProjectsLoading, admi
   onDeleteProject: (project: Project) => void
   onLoadUserDirectory: (afterID: number | null) => Promise<UserDirectoryPage>
   onCreateProject: (event: React.FormEvent<HTMLFormElement>, memberIDs: number[]) => Promise<boolean>
+  onLoadGitHubRepositories: () => Promise<GitHubRepository[]>
+  onGetProjectRepository: (projectID: number) => Promise<GitHubRepository | null>
+  onSetProjectRepository: (projectID: number, repositoryID: number | null) => Promise<void>
 }) {
   const [query, setQuery] = useState('')
   const [directoryUsers, setDirectoryUsers] = useState<UserSuggestion[]>([])
@@ -660,6 +760,12 @@ function ProjectsDirectory({ projects, adminProjects, adminProjectsLoading, admi
   const [directoryLoading, setDirectoryLoading] = useState(false)
   const [directoryNextAfterID, setDirectoryNextAfterID] = useState<number | null>(null)
   const [creating, setCreating] = useState(false)
+  const [githubRepositories, setGitHubRepositories] = useState<GitHubRepository[]>([])
+  const [githubRepositoriesError, setGitHubRepositoriesError] = useState('')
+  const [repositorySettingsProject, setRepositorySettingsProject] = useState<number | null>(null)
+  const [repositorySettingsCurrent, setRepositorySettingsCurrent] = useState<GitHubRepository | null>(null)
+  const [repositorySettingsSelection, setRepositorySettingsSelection] = useState('')
+  const [repositorySaving, setRepositorySaving] = useState(false)
   const filtered = projects.filter(project => `${project.name} ${project.description}`.toLowerCase().includes(query.toLowerCase()))
   const filteredAdminProjects = adminProjects.filter(project => `${project.name} ${project.description} ${project.owner_username || ''} ${project.owner_id || ''}`.toLowerCase().includes(query.toLowerCase()))
   const filteredUsers = directoryUsers.filter(user => user.username.toLowerCase().includes(memberFilter.toLowerCase()))
@@ -680,6 +786,13 @@ function ProjectsDirectory({ projects, adminProjects, adminProjectsLoading, admi
   }
 
   useEffect(() => { void loadUserDirectory(null) }, [])
+  useEffect(() => {
+    let active = true
+    onLoadGitHubRepositories().then(repositories => { if (active) setGitHubRepositories(repositories) }).catch(cause => {
+      if (active) setGitHubRepositoriesError(cause instanceof Error ? cause.message : 'GitHub App repositories are unavailable.')
+    })
+    return () => { active = false }
+  }, [onLoadGitHubRepositories])
 
   function toggleSelectedMember(user: UserSuggestion, selected: boolean) {
     setSelectedMembers(current => {
@@ -700,6 +813,34 @@ function ProjectsDirectory({ projects, adminProjects, adminProjectsLoading, admi
       }
     } finally {
       setCreating(false)
+    }
+  }
+  async function saveProjectRepository(projectID: number, repositoryID: number | null) {
+    setRepositorySaving(true)
+    setDirectoryError('')
+    try {
+      await onSetProjectRepository(projectID, repositoryID)
+      if (repositoryID === null) setRepositorySettingsCurrent(null)
+      else setRepositorySettingsCurrent(githubRepositories.find(repository => repository.id === repositoryID) || null)
+      setRepositorySettingsProject(null)
+    } catch (cause) {
+      setDirectoryError(cause instanceof Error ? cause.message : 'Could not update project repository.')
+    } finally {
+      setRepositorySaving(false)
+    }
+  }
+  async function openRepositorySettings(projectID: number) {
+    if (repositorySettingsProject === projectID) {
+      setRepositorySettingsProject(null)
+      return
+    }
+    setRepositorySettingsProject(projectID)
+    try {
+      const repository = await onGetProjectRepository(projectID)
+      setRepositorySettingsCurrent(repository)
+      setRepositorySettingsSelection(repository ? String(repository.id) : '')
+    } catch (cause) {
+      setDirectoryError(cause instanceof Error ? cause.message : 'Could not load project repository.')
     }
   }
   return <section className="directory-page" aria-labelledby="directory-title">
@@ -729,7 +870,8 @@ function ProjectsDirectory({ projects, adminProjects, adminProjectsLoading, admi
     </section>}
     <section className="creation-panel directory-create-project">
       <h2>Create a project</h2>
-      <form onSubmit={event => void submitProject(event)}><div className="creation-fields"><input id="project-name" name="name" placeholder="Project name" required /><input name="description" placeholder="Short description" /><button className="primary-button" type="submit" disabled={creating}>{creating ? 'Creating…' : 'Create project'}</button></div></form>
+      <form onSubmit={event => void submitProject(event)}><div className="creation-fields"><input id="project-name" name="name" placeholder="Project name" required /><input name="description" placeholder="Short description" /><label className="github-repository-select">GitHub repository (optional)<select name="github_repository_id" defaultValue=""><option value="">No repository connected</option>{githubRepositories.map(repository => <option key={repository.id} value={repository.id}>{repository.owner}/{repository.name}</option>)}</select></label><button className="primary-button" type="submit" disabled={creating}>{creating ? 'Creating…' : 'Create project'}</button></div></form>
+      {githubRepositoriesError && <p className="github-connection-note" role="status">GitHub repository selection is unavailable. You can still create a project without connecting one.</p>}
       <div className="project-invite-picker"><strong>Choose project members</strong><p>Select up to 50 active users to add as project members. You will be the project manager.</p>
         <input className="project-member-filter" aria-label="Filter listed users" value={memberFilter} onChange={event => setMemberFilter(event.target.value)} placeholder="Filter listed users…" />
         {directoryError && <p className="user-reset-error" role="alert">{directoryError}<button type="button" className="text-button" onClick={() => void loadUserDirectory(null)}>Retry</button></p>}
@@ -744,8 +886,10 @@ function ProjectsDirectory({ projects, adminProjects, adminProjectsLoading, admi
       <div className="directory-card-meta"><span><span className="material-symbols-outlined" aria-hidden="true">confirmation_number</span>Issues available in board</span><span>#{project.id}</span></div>
       <div className="project-card-actions">
         <button type="button" className={`directory-open${selectedProjectId === project.id ? ' current' : ''}`} onClick={() => onSelectProject(project.id)}>{selectedProjectId === project.id ? 'Open current board' : 'Open project'}<span className="material-symbols-outlined" aria-hidden="true">arrow_forward</span></button>
+        {project.owner_id === currentUserID && <button type="button" className="secondary-button" onClick={() => void openRepositorySettings(project.id)}>GitHub repository</button>}
         {project.owner_id === currentUserID && <button type="button" className="project-delete-button" aria-label={`Delete project ${project.name}`} onMouseDown={event => event.currentTarget.focus()} onClick={() => onDeleteProject(project)}><span className="material-symbols-outlined" aria-hidden="true">delete</span>Delete</button>}
       </div>
+      {repositorySettingsProject === project.id && <div className="project-repository-settings"><label>Approved repository<select aria-label={`Repository for ${project.name}`} value={repositorySettingsSelection} onChange={event => setRepositorySettingsSelection(event.target.value)}><option value="">Select installed repository</option>{githubRepositories.map(repository => <option key={repository.id} value={repository.id}>{repository.owner}/{repository.name}</option>)}</select></label><span className="github-connection-note">Current: {repositorySettingsCurrent ? `${repositorySettingsCurrent.owner}/${repositorySettingsCurrent.name}` : 'No repository connected'}</span><button type="button" className="secondary-button" disabled={repositorySaving || !repositorySettingsSelection} onClick={() => void saveProjectRepository(project.id, Number(repositorySettingsSelection))}>{repositorySaving ? 'Saving…' : 'Connect'}</button><button type="button" className="text-button" disabled={repositorySaving || !repositorySettingsCurrent} onClick={() => void saveProjectRepository(project.id, null)}>Disconnect</button></div>}
     </article>)}</div> : !isGlobalAdmin && <div className="directory-empty"><span className="material-symbols-outlined" aria-hidden="true">folder_off</span><h2>{projects.length ? 'No matching projects' : 'No projects yet'}</h2><p>{projects.length ? 'Try another search.' : 'Create a project using the form above to give your team a place to track issues.'}</p></div>}
   </section>
 }

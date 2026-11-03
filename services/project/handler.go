@@ -13,20 +13,31 @@ import (
 )
 
 type projectHandler struct {
-	db      *sql.DB
-	authURL string
-	client  *http.Client
+	db           *sql.DB
+	authURL      string
+	client       *http.Client
+	repoVerifier repositoryVerifier
+}
+type repositoryVerifier interface {
+	VerifyRepository(context.Context, uint64) (githubRepository, error)
+}
+type githubRepository struct {
+	ID    uint64 `json:"id"`
+	Owner string `json:"owner"`
+	Name  string `json:"name"`
 }
 type project struct {
-	ID          uint64 `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	OwnerID     uint64 `json:"owner_id"`
+	ID               uint64            `json:"id"`
+	Name             string            `json:"name"`
+	Description      string            `json:"description"`
+	OwnerID          uint64            `json:"owner_id"`
+	GitHubRepository *githubRepository `json:"github_repository,omitempty"`
 }
 type projectInput struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	MemberIDs   []uint64 `json:"member_ids"`
+	Name               string   `json:"name"`
+	Description        string   `json:"description"`
+	MemberIDs          []uint64 `json:"member_ids"`
+	GitHubRepositoryID uint64   `json:"github_repository_id,omitempty"`
 }
 type projectMember struct {
 	UserID    uint64 `json:"user_id"`
@@ -55,6 +66,10 @@ func (h *projectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.checkMember(w, r, id, userID)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "repository" {
+		h.repository(w, r, id, userID)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "members" {
 		h.members(w, r, id, userID)
 		return
@@ -73,6 +88,19 @@ func (h *projectHandler) collection(w http.ResponseWriter, r *http.Request, user
 		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input) != nil || strings.TrimSpace(input.Name) == "" || len(input.Name) > 160 || len(input.MemberIDs) > 50 {
 			http.Error(w, "invalid project", http.StatusBadRequest)
 			return
+		}
+		var repo *githubRepository
+		if input.GitHubRepositoryID != 0 {
+			if h.repoVerifier == nil {
+				http.Error(w, "repository verification unavailable", http.StatusBadGateway)
+				return
+			}
+			verified, err := h.repoVerifier.VerifyRepository(r.Context(), input.GitHubRepositoryID)
+			if err != nil || verified.ID != input.GitHubRepositoryID || verified.Owner == "" || verified.Name == "" {
+				http.Error(w, "repository is not installed or could not be verified", http.StatusBadGateway)
+				return
+			}
+			repo = &verified
 		}
 		memberIDs := make([]uint64, 0, len(input.MemberIDs))
 		seenMembers := make(map[uint64]struct{}, len(input.MemberIDs))
@@ -124,11 +152,17 @@ func (h *projectHandler) collection(w http.ResponseWriter, r *http.Request, user
 				return
 			}
 		}
+		if repo != nil {
+			if _, err = tx.ExecContext(r.Context(), "INSERT INTO project_repositories (project_id, github_repository_id, owner, name) VALUES (?, ?, ?, ?)", id, repo.ID, repo.Owner, repo.Name); err != nil {
+				http.Error(w, "database error", 500)
+				return
+			}
+		}
 		if err = tx.Commit(); err != nil {
 			http.Error(w, "database error", 500)
 			return
 		}
-		writeProject(w, http.StatusCreated, project{ID: uint64(id), Name: strings.TrimSpace(input.Name), Description: input.Description, OwnerID: userID})
+		writeProject(w, http.StatusCreated, project{ID: uint64(id), Name: strings.TrimSpace(input.Name), Description: input.Description, OwnerID: userID, GitHubRepository: repo})
 	case http.MethodGet:
 		query := "SELECT p.id, p.name, p.description, p.owner_id FROM projects p JOIN project_members m ON m.project_id=p.id WHERE m.user_id=? AND p.deleted_at IS NULL ORDER BY p.id"
 		args := []any{userID}
@@ -487,6 +521,27 @@ func (h *projectHandler) checkMember(w http.ResponseWriter, r *http.Request, pro
 		return
 	}
 	targetID := userID
+	if r.URL.Query().Get("require_admin") == "true" {
+		if r.URL.Query().Get("user_id") != "" {
+			http.Error(w, "require_admin cannot be combined with user_id", http.StatusBadRequest)
+			return
+		}
+		var admin bool
+		err := h.db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM project_members m JOIN projects p ON p.id=m.project_id WHERE m.project_id=? AND m.user_id=? AND m.role='admin' AND p.deleted_at IS NULL)", projectID, userID).Scan(&admin)
+		if err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		if !admin && isPlatformAdmin(r) {
+			err = h.db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM projects WHERE id=? AND deleted_at IS NULL)", projectID).Scan(&admin)
+			if err != nil {
+				http.Error(w, "database error", 500)
+				return
+			}
+		}
+		writeProject(w, http.StatusOK, map[string]bool{"member": admin, "admin": admin})
+		return
+	}
 	if rawTarget := r.URL.Query().Get("user_id"); rawTarget != "" {
 		parsed, err := strconv.ParseUint(rawTarget, 10, 64)
 		if err != nil || parsed == 0 {
@@ -523,6 +578,78 @@ func (h *projectHandler) checkMember(w http.ResponseWriter, r *http.Request, pro
 		exists = active
 	}
 	writeProject(w, 200, map[string]bool{"member": exists})
+}
+
+func (h *projectHandler) repository(w http.ResponseWriter, r *http.Request, projectID, userID uint64) {
+	switch r.Method {
+	case http.MethodGet:
+		if !h.isMember(r, projectID, userID) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	case http.MethodPut, http.MethodDelete:
+		if !h.canManageProject(r, projectID, userID) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+	default:
+		w.Header().Set("Allow", "GET, PUT, DELETE")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var exists bool
+	if err := h.db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM projects WHERE id=? AND deleted_at IS NULL)", projectID).Scan(&exists); err != nil {
+		http.Error(w, "database error", 500)
+		return
+	}
+	if !exists {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		if _, err := h.db.ExecContext(r.Context(), "DELETE FROM project_repositories WHERE project_id=?", projectID); err != nil {
+			http.Error(w, "database error", 500)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method == http.MethodPut {
+		var input struct {
+			ID uint64 `json:"github_repository_id"`
+		}
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&input) != nil || input.ID == 0 {
+			http.Error(w, "invalid github_repository_id", 400)
+			return
+		}
+		if h.repoVerifier == nil {
+			http.Error(w, "repository verification unavailable", http.StatusBadGateway)
+			return
+		}
+		repo, err := h.repoVerifier.VerifyRepository(r.Context(), input.ID)
+		if err != nil || repo.ID != input.ID || repo.Owner == "" || repo.Name == "" {
+			http.Error(w, "repository is not installed or could not be verified", http.StatusBadGateway)
+			return
+		}
+		_, err = h.db.ExecContext(r.Context(), "INSERT INTO project_repositories (project_id, github_repository_id, owner, name) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE github_repository_id=VALUES(github_repository_id), owner=VALUES(owner), name=VALUES(name)", projectID, repo.ID, repo.Owner, repo.Name)
+		if err != nil {
+			http.Error(w, "database error", 500)
+			return
+		}
+		writeProject(w, http.StatusOK, repo)
+		return
+	}
+	var repo githubRepository
+	err := h.db.QueryRowContext(r.Context(), "SELECT github_repository_id, owner, name FROM project_repositories WHERE project_id=?", projectID).Scan(&repo.ID, &repo.Owner, &repo.Name)
+	if err == sql.ErrNoRows {
+		writeProject(w, http.StatusOK, nil)
+		return
+	}
+	if err != nil {
+		http.Error(w, "database error", 500)
+		return
+	}
+	writeProject(w, http.StatusOK, repo)
 }
 func (h *projectHandler) isAdmin(r *http.Request, projectID, userID uint64) bool {
 	var exists bool

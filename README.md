@@ -87,12 +87,13 @@ Each service owns its database and accesses another service only through its API
   deactivation/reactivation.
 - Global admins can assign active accounts to projects from the Users page;
   project managers retain project-scoped member controls.
-- Initial authenticated OpenRouter chat endpoint (`POST /ai/chat`) is server-side;
+ - Authenticated OpenRouter chat endpoint (`POST /ai/chat`) is server-side;
   the frontend includes an AI Copilot panel and full-page entry, and bounded read-only tools
   retrieve authorized tracker data through service APIs. Each submitted question
-  is independent; conversation history is not sent to the model. GitHub evidence
-  retrieval is not implemented yet. The OpenRouter key is
-  required for chat, but not for the core tracker to start.
+   is independent; conversation history is not sent to the model. Optional
+   GitHub App integration supports installed-repository connections and bounded,
+   read-only evidence for explicitly linked PRs; see [`docs/github-app.md`](docs/github-app.md).
+   Both OpenRouter and GitHub are optional for the core tracker.
 
 ## Build roadmap
 

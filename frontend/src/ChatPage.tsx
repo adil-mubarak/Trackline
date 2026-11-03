@@ -1,4 +1,6 @@
 import { FormEvent, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 type ChatMessage = { id: number; role: 'user' | 'assistant'; content: string }
 
@@ -62,7 +64,15 @@ export default function ChatPage({ onAsk, presentation = 'page', onClose }: { on
         <span className="ai-chat-message-avatar material-symbols-outlined" aria-hidden="true">{message.role === 'user' ? 'person' : 'auto_awesome'}</span>
         <div className="ai-chat-message-body">
           <strong>{message.role === 'user' ? 'You' : 'Tracker assistant'}</strong>
-          <p>{message.content}</p>
+          {message.role === 'assistant' ? <div className="ai-chat-markdown">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                a: ({ children, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer">{children}</a>,
+                table: ({ children }) => <div className="ai-chat-table-scroll"><table>{children}</table></div>,
+              }}
+            >{message.content}</ReactMarkdown>
+          </div> : <p className="ai-chat-user-text">{message.content}</p>}
         </div>
       </article>)}
       {busy && <p className="ai-chat-loading" role="status"><span className="material-symbols-outlined" aria-hidden="true">progress_activity</span>Checking authorized tracker records…</p>}

@@ -9,6 +9,64 @@ afterEach(() => {
 })
 
 describe('restoring UI identity from an existing session token', () => {
+  it('offers only installed repositories during project creation and submits their canonical ID', async () => {
+    const payload = btoa(JSON.stringify({ sub: 42, role: 'member', exp: 4_000_000_000 }))
+    localStorage.setItem('token', `header.${payload}.signature`)
+    const createRequest = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/projects' && init?.method === 'POST') {
+        createRequest(JSON.parse(String(init.body)))
+        return new Response(JSON.stringify({ id: 8, name: 'Repo project', description: '' }), { status: 201 })
+      }
+      if (url === '/api/projects') return new Response(JSON.stringify([]), { status: 200 })
+      if (url === '/api/github/repositories') return new Response(JSON.stringify([{ id: 123, owner: 'acme', name: 'tracker' }]), { status: 200 })
+      if (url.startsWith('/api/users/directory')) return new Response(JSON.stringify({ users: [], next_after_id: null }), { status: 200 })
+      return new Response(JSON.stringify([]), { status: 200 })
+    }))
+
+    render(<App />)
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Workspace' })).getByRole('button', { name: 'Projects' }))
+    const repositoryPicker = await screen.findByLabelText('GitHub repository (optional)')
+    fireEvent.change(repositoryPicker, { target: { value: '123' } })
+    fireEvent.change(screen.getByPlaceholderText('Project name'), { target: { value: 'Repo project' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create project' }))
+
+    await waitFor(() => expect(createRequest).toHaveBeenCalledWith(expect.objectContaining({ github_repository_id: 123, name: 'Repo project' })))
+  })
+
+  it('shows explicit pull request links on the issue and lets project admins link another PR', async () => {
+    const payload = btoa(JSON.stringify({ sub: 42, role: 'member', exp: 4_000_000_000 }))
+    localStorage.setItem('token', `header.${payload}.signature`)
+    const linkRequest = vi.fn()
+    const requestedURLs: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      requestedURLs.push(url)
+      if (url === '/api/projects') return new Response(JSON.stringify([{ id: 7, name: 'Project', description: '', owner_id: 42 }]), { status: 200 })
+      if (url === '/api/projects/7/members') return new Response(JSON.stringify([{ user_id: 42, role: 'admin' }]), { status: 200 })
+      if (url === '/api/projects/7/repository') return new Response(JSON.stringify({ id: 123, owner: 'acme', name: 'tracker' }), { status: 200 })
+      if (url === '/api/issues?project_id=7') return new Response(JSON.stringify([{ id: 12, project_id: 7, title: 'Example issue', description: '', priority: 'high', status: 'todo', position: 0 }]), { status: 200 })
+      if (url === '/api/issues/12/labels') return new Response(JSON.stringify([]), { status: 200 })
+      if (url === '/api/issues/12/pull-requests' && init?.method === 'POST') {
+        linkRequest(JSON.parse(String(init.body)))
+        return new Response(JSON.stringify({ repository_id: 123, number: 45, owner: 'acme', repo: 'tracker', html_url: 'https://github.com/acme/tracker/pull/45' }), { status: 201 })
+      }
+      if (url === '/api/issues/12/pull-requests') return new Response(JSON.stringify([{ repository_id: 123, number: 44, owner: 'acme', repo: 'tracker', html_url: 'https://github.com/acme/tracker/pull/44' }]), { status: 200 })
+      if (url.startsWith('/api/activity')) return new Response(JSON.stringify([]), { status: 200 })
+      return new Response(JSON.stringify([]), { status: 200 })
+    }))
+
+    render(<App />)
+    await waitFor(() => expect(requestedURLs.some(url => url.includes('/api/issues?project_id=7'))).toBe(true))
+    fireEvent.click(await screen.findByRole('button', { name: 'Example issue' }))
+    expect(await screen.findByRole('link', { name: /acme\/tracker#44/ })).not.toBeNull()
+    fireEvent.change(screen.getByLabelText(/PR number/), { target: { value: '45' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Link PR' }))
+    await waitFor(() => expect(linkRequest).toHaveBeenCalledWith({ number: 45 }))
+    expect(await screen.findByRole('link', { name: /acme\/tracker#45/ })).not.toBeNull()
+  })
+
   it('opens the AI assistant and sends an authenticated chat request', async () => {
     const payload = btoa(JSON.stringify({ sub: 42, role: 'member', exp: 4_000_000_000 }))
     localStorage.setItem('token', `header.${payload}.signature`)

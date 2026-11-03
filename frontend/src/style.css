@@ -545,6 +545,26 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .ai-chat-message-body { min-width: 0; display: grid; gap: 5px; padding-top: 2px; }
 .ai-chat-message-body strong { color: var(--text); font-size: 11px; }
 .ai-chat-message-body p { margin: 0; color: #353b4b; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai-chat-message-body .ai-chat-markdown { min-width: 0; color: #353b4b; font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.ai-chat-markdown > :first-child { margin-top: 0; }
+.ai-chat-markdown > :last-child { margin-bottom: 0; }
+.ai-chat-markdown h1, .ai-chat-markdown h2, .ai-chat-markdown h3, .ai-chat-markdown h4 { margin: 1.05em 0 .4em; color: var(--text); line-height: 1.3; }
+.ai-chat-markdown h1 { font-size: 1.35em; } .ai-chat-markdown h2 { font-size: 1.2em; } .ai-chat-markdown h3, .ai-chat-markdown h4 { font-size: 1.05em; }
+.ai-chat-markdown p, .ai-chat-markdown ul, .ai-chat-markdown ol, .ai-chat-markdown blockquote, .ai-chat-markdown pre { margin: .65em 0; }
+.ai-chat-markdown ul, .ai-chat-markdown ol { padding-left: 1.5em; }
+.ai-chat-markdown li + li { margin-top: .25em; }
+.ai-chat-markdown a { color: var(--primary); text-decoration: underline; text-underline-offset: 2px; }
+.ai-chat-markdown blockquote { margin-left: 0; padding: .25em .8em; border-left: 3px solid #d7d4ff; color: var(--text-secondary); }
+.ai-chat-markdown :not(pre) > code { padding: .12em .35em; border-radius: 4px; background: #f0f1f6; color: #553db2; font-size: .92em; }
+.ai-chat-markdown pre { max-width: 100%; overflow-x: auto; padding: 10px 12px; border-radius: 7px; background: #202536; color: #f3f4f8; font-size: .9em; line-height: 1.55; }
+.ai-chat-markdown pre code { white-space: pre; }
+.ai-chat-table-scroll { max-width: 100%; margin: .8em 0; overflow-x: auto; border: 1px solid #e5e7ef; border-radius: 7px; }
+.ai-chat-markdown table { width: 100%; border-collapse: collapse; font-size: .92em; }
+.ai-chat-markdown th, .ai-chat-markdown td { min-width: 90px; padding: 6px 9px; border-bottom: 1px solid #e5e7ef; text-align: left; vertical-align: top; }
+.ai-chat-markdown th { background: #f5f6fa; color: var(--text); font-weight: 650; }
+.ai-chat-markdown tr:last-child td { border-bottom: 0; }
+.ai-chat-markdown hr { margin: 1em 0; border: 0; border-top: 1px solid #e5e7ef; }
+.ai-chat-user-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ai-chat-loading { display: flex; align-items: center; gap: 8px; margin: 0 0 0 40px; color: var(--text-secondary); font-size: 11px; }
 .ai-chat-loading .material-symbols-outlined { font-size: 16px; animation: ai-chat-spin 1.2s linear infinite; }
 @keyframes ai-chat-spin { to { transform: rotate(360deg); } }
@@ -556,6 +576,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .ask-ai-button { min-height: 32px; gap: 6px; padding: 0 10px; border-color: #d7d4ff; background: #f4f3ff; color: var(--primary); font-size: 11px; }
 .ask-ai-button:hover { background: #eae8ff; }
 .ask-ai-button .material-symbols-outlined { font-size: 16px; }
+.repository-settings-button { min-height: 32px; gap: 5px; padding: 0 9px; font-size: 11px; }
+.repository-settings-button .material-symbols-outlined { font-size: 15px; }
+.github-repository-dialog { width: min(520px, 100%); }
+.github-repository-dialog .dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; }
+.github-repository-dialog .dialog-heading h2 { margin: 2px 0 6px; }
+.github-repository-dialog .dialog-heading p:last-child { margin: 0; color: var(--outline); font-size: 12px; }
+.github-repository-dialog .github-repository-select { margin-top: 20px; }
 .ai-copilot-panel { position: fixed; z-index: 40; right: 24px; bottom: 22px; width: min(420px, calc(100vw - 280px)); height: min(650px, calc(100vh - 90px)); overflow: hidden; border: 1px solid var(--outline); border-radius: var(--radius-lg); background: white; box-shadow: 0 18px 50px #0b1c3030; }
 .ai-chat-panel-content { width: 100%; height: 100%; min-height: 0; display: grid; grid-template-rows: auto auto minmax(80px, 1fr) auto; gap: 0; overflow: hidden; }
 .ai-chat-panel-content .ai-chat-heading { min-height: 55px; display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 11px; border-bottom: 1px solid var(--outline); background: #f0f2ff; }
@@ -571,9 +598,21 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .ai-chat-panel-content .ai-chat-suggestions .secondary-button { min-height: 30px; padding: 4px 7px; font-size: 9px; }
 .ai-chat-panel-content .ai-chat-transcript { width: 100%; min-height: 0; gap: 12px; padding: 11px 10px; }
 .ai-chat-panel-content .ai-chat-message-body p { font-size: 11px; }
+.ai-chat-panel-content .ai-chat-message-body .ai-chat-markdown { font-size: 11px; }
 .ai-chat-panel-content .ai-chat-composer { width: auto; margin: 8px; padding: 8px; }
 .ai-chat-panel-content .ai-chat-composer textarea { min-height: 48px; font-size: 11px; }
 .ai-chat-panel-content .error-banner { margin: 0 8px; font-size: 10px; }
+.github-repository-select { display: grid; gap: 5px; min-width: 220px; color: var(--on-surface); font-size: 11px; font-weight: 600; }
+.github-repository-select select, .project-repository-settings select { min-height: 36px; border: 1px solid var(--outline); border-radius: var(--radius-sm); padding: 0 9px; background: white; color: var(--on-surface); }
+.github-connection-note { margin: 8px 0 0; color: var(--outline); font-size: 11px; }
+.project-repository-settings { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; width: 100%; margin-top: 10px; padding: 10px; border-radius: var(--radius-sm); background: var(--surface-container-low); }
+.project-repository-settings label { display: grid; flex: 1 1 220px; gap: 5px; color: var(--on-surface); font-size: 11px; font-weight: 600; }
+.issue-pull-requests ul { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.issue-pull-requests li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 9px; border: 1px solid var(--outline); border-radius: var(--radius-sm); }
+.issue-pull-requests li a { display: inline-flex; align-items: center; gap: 5px; color: var(--primary); font-size: 11px; font-weight: 600; text-decoration: none; }
+.issue-pull-requests li a:hover { text-decoration: underline; }
+.issue-pull-requests li a .material-symbols-outlined { font-size: 14px; }
+.issue-pull-requests .add-label-form label { flex-basis: 100%; font-size: 10px; color: var(--outline); }
 @media (max-width: 760px) {
   .ai-copilot-panel { z-index: 70; inset: 62px 10px 10px 72px; width: auto; height: auto; max-height: none; }
   .ai-chat-panel-content { grid-template-rows: auto auto minmax(80px, 1fr) auto; }

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { ActivityEntry, AdminUser, AnalyticsSnapshot, applyIssueMove, Issue, Project, ProjectBoard, ProjectMember, UserDirectoryPage, UserSuggestion } from './ProjectBoard'
 import ChatPage from './ChatPage'
 
@@ -32,6 +32,7 @@ async function mapConcurrent<T, R>(items: T[], concurrency: number, mapper: (ite
 }
 
 type AuthMode = 'login' | 'register' | 'forgot'
+type GitHubRepository = { id: number; owner: string; name: string }
 
 function userContextFromToken(token: string): { userID: number; role: string; mustChangePassword: boolean } {
   try {
@@ -60,6 +61,12 @@ function initialUserContext() {
 
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem('token') || '')
+  const loadGitHubRepositories = useCallback(async () => await api('/github/repositories') as GitHubRepository[], [])
+  const getProjectRepository = useCallback(async (projectId: number) => await api(`/projects/${projectId}/repository`) as GitHubRepository | null, [])
+  const setProjectRepository = useCallback(async (projectId: number, repositoryID: number | null) => {
+    if (repositoryID === null) await api(`/projects/${projectId}/repository`, { method: 'DELETE' })
+    else await api(`/projects/${projectId}/repository`, { method: 'PUT', body: JSON.stringify({ github_repository_id: repositoryID }) })
+  }, [])
   const [mode, setMode] = useState<AuthMode>('login')
   const [showPassword, setShowPassword] = useState(false)
   const [projects, setProjects] = useState<Project[]>([])
@@ -270,7 +277,7 @@ export default function App() {
     try {
       await api('/projects', {
         method: 'POST',
-        body: JSON.stringify({ name: form.get('name'), description: form.get('description') || '', member_ids: memberIDs }),
+        body: JSON.stringify({ name: form.get('name'), description: form.get('description') || '', member_ids: memberIDs, ...(String(form.get('github_repository_id') || '') ? { github_repository_id: Number(form.get('github_repository_id')) } : {}) }),
       })
       target.reset()
       await loadProjects()
@@ -864,6 +871,9 @@ export default function App() {
         onOpenBoard={() => setScreen('board')}
         onAddProject={addProjectFocus}
         onCreateProject={createProject}
+        onLoadGitHubRepositories={loadGitHubRepositories}
+        onGetProjectRepository={getProjectRepository}
+        onSetProjectRepository={setProjectRepository}
         onDeleteProject={deleteProject}
         onLoadUserDirectory={loadUserDirectory}
         onAddIssue={addIssueFocus}
@@ -895,7 +905,7 @@ export default function App() {
         onClose={() => setCreateIssueOpen(false)}
         onSubmit={createIssue}
       />}
-      {selectedIssue && <IssueDetailDrawer issue={selectedIssue} projectId={selectedIssue.project_id} members={members} onClose={() => setSelectedIssue(null)} onSaved={async () => {
+      {selectedIssue && <IssueDetailDrawer issue={selectedIssue} projectId={selectedIssue.project_id} members={members} canManageProject={globalRole === 'admin' || members.some(member => member.user_id === currentUserID && member.role === 'admin')} onClose={() => setSelectedIssue(null)} onSaved={async () => {
         setSelectedIssue(null)
         await loadIssues(selectedIssue.project_id)
         if (screen === 'my-issues') await loadMyIssues()
@@ -905,9 +915,10 @@ export default function App() {
 }
 
 type IssueLabel = { id: number; name: string }
+type IssuePullRequest = { repository_id: number; number: number; owner: string; repo: string; html_url: string }
 type ActivityEvent = { id: number; issue_id: number; actor_id: number; event_type: string; payload: Record<string, unknown>; occurred_at: string }
 
-function IssueDetailDrawer({ issue, projectId, members, onClose, onSaved }: { issue: Issue; projectId: number; members: ProjectMember[]; onClose: () => void; onSaved: () => Promise<void> }) {
+function IssueDetailDrawer({ issue, projectId, members, canManageProject, onClose, onSaved }: { issue: Issue; projectId: number; members: ProjectMember[]; canManageProject: boolean; onClose: () => void; onSaved: () => Promise<void> }) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [labels, setLabels] = useState<IssueLabel[]>([])
@@ -916,6 +927,10 @@ function IssueDetailDrawer({ issue, projectId, members, onClose, onSaved }: { is
   const [activeTab, setActiveTab] = useState<'details' | 'activity'>('details')
   const [labelName, setLabelName] = useState('')
   const [savingLabel, setSavingLabel] = useState(false)
+  const [pullRequests, setPullRequests] = useState<IssuePullRequest[]>([])
+  const [repository, setRepository] = useState<GitHubRepository | null>(null)
+  const [pullRequestNumber, setPullRequestNumber] = useState('')
+  const [savingPullRequest, setSavingPullRequest] = useState(false)
   const dialogRef = useRef<HTMLElement>(null)
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
@@ -927,6 +942,12 @@ function IssueDetailDrawer({ issue, projectId, members, onClose, onSaved }: { is
     }).catch(() => {
       if (current) setLabels([])
     })
+    api(`/issues/${issue.id}/pull-requests`).then((result: IssuePullRequest[]) => {
+      if (current) setPullRequests(result)
+    }).catch(() => { if (current) setPullRequests([]) })
+    api(`/projects/${projectId}/repository`).then((result: GitHubRepository | null) => {
+      if (current) setRepository(result)
+    }).catch(() => { if (current) setRepository(null) })
     if (projectId) {
       api(`/activity?project_id=${projectId}&limit=100`).then((result: ActivityEvent[]) => {
         if (current) {
@@ -942,6 +963,35 @@ function IssueDetailDrawer({ issue, projectId, members, onClose, onSaved }: { is
     }
     return () => { current = false }
   }, [issue.id, projectId])
+
+  async function addPullRequest() {
+    const number = Number(pullRequestNumber)
+    if (!Number.isSafeInteger(number) || number <= 0) {
+      setError('Enter a valid pull request number.')
+      return
+    }
+    setSavingPullRequest(true)
+    setError('')
+    try {
+      const linked = await api(`/issues/${issue.id}/pull-requests`, { method: 'POST', body: JSON.stringify({ number }) }) as IssuePullRequest
+      setPullRequests(current => current.some(item => item.number === linked.number && item.repository_id === linked.repository_id) ? current : [...current, linked])
+      setPullRequestNumber('')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not link pull request')
+    } finally {
+      setSavingPullRequest(false)
+    }
+  }
+
+  async function removePullRequest(link: IssuePullRequest) {
+    setError('')
+    try {
+      await api(`/issues/${issue.id}/pull-requests/${link.number}?repository_id=${link.repository_id}`, { method: 'DELETE' })
+      setPullRequests(current => current.filter(item => !(item.number === link.number && item.repository_id === link.repository_id)))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not unlink pull request')
+    }
+  }
 
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null
@@ -1070,6 +1120,12 @@ function IssueDetailDrawer({ issue, projectId, members, onClose, onSaved }: { is
                 <button className="secondary-button" type="button" onClick={() => void addLabel()} disabled={savingLabel || !labelName.trim()}>{savingLabel ? 'Adding…' : 'Add label'}</button>
               </div>
             </div>
+            <section className="drawer-labels issue-pull-requests" aria-labelledby="linked-pr-title">
+              <div className="drawer-section-title"><h3 id="linked-pr-title">Linked pull requests</h3></div>
+              {pullRequests.length ? <ul>{pullRequests.map(link => <li key={`${link.repository_id}-${link.number}`}><a href={link.html_url} target="_blank" rel="noreferrer">{link.owner}/{link.repo}#{link.number}<span className="material-symbols-outlined" aria-hidden="true">open_in_new</span></a>{canManageProject && <button type="button" className="text-button" onClick={() => void removePullRequest(link)}>Unlink</button>}</li>)}</ul> : <p className="label-empty">No pull requests linked.</p>}
+              {!repository && <p className="label-empty">Connect a GitHub repository to this project before linking a PR.</p>}
+              {repository && canManageProject && <div className="add-label-form"><label htmlFor="pull-request-number">{repository.owner}/{repository.name} · PR number</label><input id="pull-request-number" inputMode="numeric" value={pullRequestNumber} onChange={event => setPullRequestNumber(event.target.value)} placeholder="e.g. 42" /><button type="button" className="secondary-button" onClick={() => void addPullRequest()} disabled={savingPullRequest || !pullRequestNumber.trim()}>{savingPullRequest ? 'Linking…' : 'Link PR'}</button></div>}
+            </section>
           </div>
         ) : (
           <div className="drawer-content activity-content">
