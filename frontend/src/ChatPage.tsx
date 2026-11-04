@@ -45,7 +45,7 @@ export default function ChatPage({ onAsk, presentation = 'page', onClose }: { on
 
     <div className="ai-chat-disclaimer" role="note">
       <span className="material-symbols-outlined" aria-hidden="true">info</span>
-      <p>AI-generated answers may be incomplete. Verify important details in the tracker. “Done” and activity records describe tracker data; they do not independently verify work quality or current activity. Each question is sent separately; previous turns are not included as context.</p>
+      <p>AI-generated answers may be incomplete. Verify important details in the tracker. “Done” and activity records do not verify work quality or current activity. If GitHub code review is enabled, bounded diff excerpts from PRs linked to an issue may be sent to OpenRouter; full repository contents are not read. Each question is sent separately; previous turns are not included as context.</p>
     </div>
 
     {messages.length === 0 ? <div className="ai-chat-welcome">

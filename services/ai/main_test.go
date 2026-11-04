@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -73,7 +74,7 @@ func TestChatDoesNotExposeUnexecutedToolSyntaxAsAssistantReply(t *testing.T) {
 	if strings.Contains(result.Reply, "<tool_call") || strings.Contains(result.Reply, "list_pull_requests") {
 		t.Fatalf("unexecuted tool syntax leaked to user: %q", result.Reply)
 	}
-	if !strings.Contains(result.Reply, "Please try again") || !strings.Contains(result.Reply, "explicitly linked") {
+	if !strings.Contains(result.Reply, "structured format") || !strings.Contains(result.Reply, "explicitly linked") {
 		t.Fatalf("unexpected safe fallback: %q", result.Reply)
 	}
 }
@@ -95,6 +96,94 @@ func TestContainsUnexecutedToolCallRequiresCompleteMarkup(t *testing.T) {
 				t.Fatalf("containsUnexecutedToolCall() = %t, want %t", got, test.want)
 			}
 		})
+	}
+}
+
+func TestCodeReviewRequestRequiresPRContextAndCodeIntent(t *testing.T) {
+	if !requestsLinkedPRCodeReview("For issue #35, explain code changes in its linked PR") {
+		t.Fatal("expected linked PR code review request to be recognized")
+	}
+	if !requestsLinkedPRCodeReview("Review code changes in issue #35") {
+		t.Fatal("explicit issue code review should not require the user to mention PR")
+	}
+	if requestsLinkedPRCodeReview("What is the status of PR #6?") {
+		t.Fatal("metadata-only request should not enter code review mode")
+	}
+	if requestsLinkedPRCodeReview("Review the status of issue #35") || requestsLinkedPRCodeReview("Review the status of PR #6") {
+		t.Fatal("metadata status requests should not enter code review mode")
+	}
+	if id, ok := explicitIssueID("For issue #35 in MCP Testing"); !ok || id != 35 {
+		t.Fatalf("explicitIssueID() = %d, %t; want 35, true", id, ok)
+	}
+	if _, ok := explicitIssueID("Compare issue #35 and issue #36"); ok {
+		t.Fatal("ambiguous issue references should not resolve")
+	}
+}
+
+func TestExplicitLinkedPRCodeReviewPrefetchesWithoutModelToolCalls(t *testing.T) {
+	app, githubServer := testGitHubApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "access_tokens"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"token":"installation-token"}`)
+		case r.URL.Path == "/repos/acme/tracker/pulls/6":
+			fmt.Fprint(w, `{"number":6,"title":"Fix issue","html_url":"https://github.com/acme/tracker/pull/6"}`)
+		case r.URL.Path == "/repos/acme/tracker/pulls/6/files":
+			fmt.Fprint(w, `[{"filename":"src/fix.go","status":"modified","additions":1,"deletions":0,"patch":"@@ -1 +1 @@\n-oldValue := false\n+newValue := true"}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer githubServer.Close()
+	var gatewayCalls, providerCalls int
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gatewayCalls++
+		if r.Header.Get("Authorization") != "Bearer caller-token" {
+			t.Errorf("gateway request did not preserve caller identity: %q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/issues/35":
+			fmt.Fprint(w, `{"project_id":8}`)
+		case "/issues/35/pull-requests":
+			fmt.Fprint(w, `[{"repository_id":42,"number":6}]`)
+		case "/projects/8/repository":
+			fmt.Fprint(w, `{"id":42,"owner":"acme","name":"tracker"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gateway.Close()
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls++
+		var request openRouterChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode provider request: %v", err)
+		}
+		if len(request.Tools) != 0 || request.ToolChoice != "" {
+			t.Errorf("prefetched code path must not rely on model tool calls: %+v", request)
+		}
+		if len(request.Messages) != 2 || !strings.Contains(request.Messages[1].Content, "newValue := true") || !strings.Contains(request.Messages[1].Content, "https://github.com/acme/tracker/pull/6") {
+			t.Errorf("provider did not receive bounded linked-PR evidence: %+v", request.Messages)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"model":"test-model","choices":[{"message":{"role":"assistant","content":"PR #6 changes src/fix.go to set newValue to true. The diff contains no test execution evidence."}}]}`)
+	}))
+	defer provider.Close()
+	handler := newAIHandlerWithIntegrations("provider-key", provider.URL, "test-model", gateway.URL, provider.Client(), app, false, true)
+	request := httptest.NewRequest(http.MethodPost, "/ai/chat", strings.NewReader(`{"message":"For issue #35 in MCP Testing, explain the changes in its linked PR(s), summarize risks and tests, and cite the PR and changed files."}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer caller-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result chatResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Reply, "src/fix.go") || providerCalls != 1 || gatewayCalls != 4 {
+		t.Fatalf("reply=%q providerCalls=%d gatewayCalls=%d", result.Reply, providerCalls, gatewayCalls)
 	}
 }
 

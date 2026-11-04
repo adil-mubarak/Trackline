@@ -66,6 +66,7 @@ tools; initially, all tools are read-only and narrowly scoped:
 | `project_schedule_summary` | project ID, bounded date range | Project/Issue APIs as available | Due dates, milestones, and schedule context |
 | `issue_details` | project ID and issue ID | Issue API | Verify a cited issue's current fields |
 | `linked_pr_evidence` | project ID, issue ID | Issue API + GitHub API | Retrieve explicitly linked PR state, checks, and review evidence |
+| server-side linked-PR code prefetch | exactly one explicit issue ID | Gateway/Issue/Project APIs + GitHub pull-request-files API | Optional bounded diff excerpts for explanation/review; server resolves and validates links rather than relying on model-selected retrieval |
 
 Only expose tools supported by existing APIs. If a required field or endpoint is
 missing, document that dependency and add the capability to its owning service
@@ -91,7 +92,8 @@ server. Setup and deployment variables are documented in
 - Connect only organization-approved repositories. Prefer a GitHub App
   installed on selected repositories with the minimum read-only permissions
   needed for pull requests and checks (and commit statuses only if required).
-  Do not request repository Contents access for the initial version.
+  The bounded diff feature uses the PR files endpoint and does not require
+  Contents permission. Do not grant broader permissions than the feature needs.
 - Keep installation credentials and short-lived tokens server-side. Never send
   tokens to OpenRouter or the browser, and never log credentials. Restrict outbound
   requests to GitHub's API and handle revocation, expiry, rate limits, and
@@ -119,6 +121,13 @@ server. Setup and deployment variables are documented in
 - Before production enablement, approve the App's installed-repository scope and
   OpenRouter processing of GitHub evidence. GitHub credentials being configured
   is not itself approval to send that evidence to the model provider.
+- Code/diff processing is a separate opt-in (`GITHUB_CODE_TO_OPENROUTER`,
+  default `false`) from metadata evidence (`GITHUB_EVIDENCE_TO_OPENROUTER`, also
+  default `false`). Code review only receives bounded PR diff excerpts for
+  explicitly linked PRs (up to five PRs and 10 files total; serialized evidence
+  capped at 16 KiB). The excerpts are untrusted, may be truncated and
+  secret-filtering is best-effort; do not use this to transmit highly sensitive
+  or regulated source code without an approved provider/data-handling review.
 
 ### Model provider: OpenRouter
 

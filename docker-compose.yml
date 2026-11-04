@@ -153,6 +153,7 @@ services:
       GITHUB_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
       GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
       GITHUB_EVIDENCE_TO_OPENROUTER: ${GITHUB_EVIDENCE_TO_OPENROUTER:-false}
+      GITHUB_CODE_TO_OPENROUTER: ${GITHUB_CODE_TO_OPENROUTER:-false}
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8087/health >/dev/null"]
       interval: 5s

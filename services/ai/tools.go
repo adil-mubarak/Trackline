@@ -62,11 +62,21 @@ func newTrackerMCP(ctx context.Context, gatewayURL, bearer, requestID string, cl
 	readOnly, openWorld := false, false
 	specs := trackerToolSpecs
 	var app *githubApp
+	var codeApp *githubApp
 	if len(github) > 0 {
 		app = github[0]
 	}
+	if len(github) > 1 {
+		codeApp = github[1]
+	}
 	if app != nil {
 		specs = append(append([]trackerToolSpec(nil), trackerToolSpecs...), trackerToolSpec{"linked_pr_evidence", "Read metadata-only evidence for pull requests explicitly linked to this issue, and only if the project is connected to the same installed repository.", `{"type":"object","properties":{"project_id":{"type":"integer","minimum":1},"issue_id":{"type":"integer","minimum":1}},"required":["project_id","issue_id"],"additionalProperties":false}`})
+	}
+	if codeApp != nil {
+		if app == nil {
+			specs = append([]trackerToolSpec(nil), trackerToolSpecs...)
+		}
+		specs = append(specs, trackerToolSpec{"linked_pr_code_changes", "Read bounded changed-file diff excerpts for pull requests explicitly linked to this issue in its connected installed repository. Do not request arbitrary repository files.", `{"type":"object","properties":{"project_id":{"type":"integer","minimum":1},"issue_id":{"type":"integer","minimum":1}},"required":["project_id","issue_id"],"additionalProperties":false}`})
 	}
 	for _, spec := range specs {
 		var schema any
@@ -84,6 +94,8 @@ func newTrackerMCP(ctx context.Context, gatewayURL, bearer, requestID string, cl
 			var err error
 			if request.Params.Name == "linked_pr_evidence" {
 				data, err = linkedPREvidence(callCtx, gatewayURL, bearer, requestID, request.Params.Arguments, client, app)
+			} else if request.Params.Name == "linked_pr_code_changes" {
+				data, err = linkedPRCodeChanges(callCtx, gatewayURL, bearer, requestID, request.Params.Arguments, client, codeApp)
 			} else {
 				data, err = executeTrackerTool(callCtx, gatewayURL, bearer, requestID, request.Params.Name, request.Params.Arguments, client)
 			}

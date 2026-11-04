@@ -125,9 +125,80 @@ func TestGitHubHandlersAndMCPDisableGracefullyWithoutApp(t *testing.T) {
 	}
 	defer session.Close()
 	for _, tool := range definitions {
-		if tool.Function.Name == "linked_pr_evidence" {
-			t.Fatal("GitHub evidence tool advertised without App credentials")
+		if tool.Function.Name == "linked_pr_evidence" || tool.Function.Name == "linked_pr_code_changes" {
+			t.Fatalf("GitHub tool %q advertised without App credentials", tool.Function.Name)
 		}
+	}
+}
+
+func TestLinkedPRCodeChangesAreBoundedAndRedacted(t *testing.T) {
+	app, githubServer := testGitHubApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "access_tokens"):
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"token":"token"}`)
+		case r.URL.Path == "/repos/acme/tracker/pulls/7":
+			fmt.Fprint(w, `{"number":7,"title":"Fix login","html_url":"https://github.com/acme/tracker/pull/7"}`)
+		case r.URL.Path == "/repos/acme/tracker/pulls/7/files":
+			if r.URL.Query().Get("per_page") != "11" {
+				t.Errorf("file query is not bounded: %s", r.URL.RawQuery)
+			}
+			fmt.Fprint(w, `[{"filename":"services/auth/login.go","status":"modified","additions":2,"deletions":1,"patch":"@@ -1 +1 @@\n-password = \"hunter2\"\n+password = \"hunter3\""},{"filename":".env","status":"modified","additions":1,"deletions":0,"patch":"+OPENAI_API_KEY=sk-secret"}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer githubServer.Close()
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/issues/8":
+			fmt.Fprint(w, `{"project_id":3}`)
+		case "/issues/8/pull-requests":
+			fmt.Fprint(w, `[{"repository_id":42,"number":7}]`)
+		case "/projects/3/repository":
+			fmt.Fprint(w, `{"id":42,"owner":"acme","name":"tracker"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gateway.Close()
+	data, err := linkedPRCodeChanges(context.Background(), gateway.URL, "caller", "request", json.RawMessage(`{"project_id":3,"issue_id":8}`), gateway.Client(), app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "services/auth/login.go") || !strings.Contains(text, "[REDACTED SENSITIVE ASSIGNMENT]") {
+		t.Fatalf("expected source diff with secret redaction: %s", text)
+	}
+	if strings.Contains(text, "hunter2") || strings.Contains(text, "hunter3") || strings.Contains(text, "OPENAI_API_KEY") || strings.Contains(text, "sk-secret") {
+		t.Fatalf("sensitive code leaked: %s", text)
+	}
+	if !strings.Contains(text, "excluded by code-evidence policy") {
+		t.Fatalf("sensitive path omission was not reported: %s", text)
+	}
+}
+
+func TestCodeEvidencePathAndPatchFiltering(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		want bool
+	}{{"src/main.go", true}, {"vendor/lib/a.go", false}, {".env.production", false}, {"certs/private.pem", false}, {"frontend/dist/app.js", false}, {"src/app.min.js", false}} {
+		if got := safeCodePath(test.path); got != test.want {
+			t.Errorf("safeCodePath(%q) = %t, want %t", test.path, got, test.want)
+		}
+	}
+	patch := `+const apiKey = "ghp_abcdefghijklmnopqrstuvwxyz0123456789"
++-----BEGIN PRIVATE KEY-----
++secret-key-material
++-----END PRIVATE KEY-----`
+	redacted := redactCodePatch(patch)
+	for _, raw := range []string{"ghp_abcdefghijklmnopqrstuvwxyz", "secret-key-material"} {
+		if strings.Contains(redacted, raw) {
+			t.Fatalf("redaction left secret material in patch: %s", redacted)
+		}
+	}
+	if got := codeFileStatus(strings.Repeat("modified", maxCodeBytes)); got != "other" {
+		t.Fatalf("untrusted status was not normalized: %q", got)
 	}
 }
 
@@ -138,6 +209,24 @@ func TestGitHubEvidenceRequiresExplicitOpenRouterOptIn(t *testing.T) {
 	}
 	if got := githubEvidenceForChat(app, true); got != app {
 		t.Fatal("explicit OpenRouter approval should enable the configured GitHub App tool")
+	}
+}
+
+func TestCodeToolCanBeOptedInSeparatelyFromMetadata(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	session, definitions, err := newTrackerMCP(ctx, "http://127.0.0.1:1", "caller", "", http.DefaultClient, nil, &githubApp{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	var codeTool, metadataTool bool
+	for _, tool := range definitions {
+		codeTool = codeTool || tool.Function.Name == "linked_pr_code_changes"
+		metadataTool = metadataTool || tool.Function.Name == "linked_pr_evidence"
+	}
+	if !codeTool || metadataTool {
+		t.Fatalf("unexpected opt-in tool exposure: code=%t metadata=%t", codeTool, metadataTool)
 	}
 }
 
