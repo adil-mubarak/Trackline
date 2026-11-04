@@ -33,7 +33,8 @@ func main() {
 		slog.Error("connect database", "error", err)
 		os.Exit(1)
 	}
-	h := &projectHandler{db: db, authURL: env("AUTH_SERVICE_URL", "http://auth:8081"), client: &http.Client{Timeout: 3 * time.Second}}
+	client := &http.Client{Timeout: 3 * time.Second}
+	h := &projectHandler{db: db, authURL: env("AUTH_SERVICE_URL", "http://auth:8081"), client: client, repoVerifier: &aiRepositoryVerifier{baseURL: os.Getenv("AI_SERVICE_URL"), client: client}}
 	mux := http.NewServeMux()
 	mux.Handle("/health", health.Handler(nil))
 	mux.Handle("/ready", health.Handler(func() error { return db.Ping() }))

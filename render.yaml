@@ -32,3 +32,9 @@ services:
         sync: false
       - key: ACTIVITY_MIGRATE_DATABASE_URL
         sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: AI_DATABASE_URL
+        sync: false
+      - key: AI_MIGRATE_DATABASE_URL
+        sync: false

@@ -8,20 +8,20 @@ MIGRATE_STEPS ?= 1
 MIGRATE_TARGET_DB = $(if $(filter all,$(MIGRATE_DATABASE)),auth_db,$(MIGRATE_DATABASE))
 
 DC = $(COMPOSE) -f $(COMPOSE_FILE)
-DATABASES = auth_db project_db issue_db activity_db
+DATABASES = auth_db project_db issue_db activity_db ai_db
 
-.PHONY: help run-trackline run-bug-issue-tracker run-frontend run-backend run-auth run-project run-issue run-activity run-gateway docker-up docker-app-up docker-status docker-down migrate-up migrate-down migrate-status fmt vet test lint build
+.PHONY: help run-trackline run-bug-issue-tracker run-frontend run-backend run-auth run-project run-issue run-activity run-ai run-gateway docker-up docker-app-up docker-status docker-down migrate-up migrate-down migrate-status fmt vet test lint build
 
 help: ## List available targets (default)
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-25s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 run-trackline: ## Run Trackline's Go backend and React frontend locally (start docker-up first)
-	$(MAKE) -j6 run-auth run-project run-issue run-activity run-gateway run-frontend
+	$(MAKE) -j7 run-auth run-project run-issue run-activity run-ai run-gateway run-frontend
 
 run-bug-issue-tracker: run-trackline ## Legacy alias for run-trackline
 
 run-backend: ## Run all Go services and the gateway locally (start docker-up first)
-	$(MAKE) -j5 run-auth run-project run-issue run-activity run-gateway
+	$(MAKE) -j6 run-auth run-project run-issue run-activity run-ai run-gateway
 
 run-frontend: ## Run the Vite development server locally
 	VITE_API_TARGET=http://127.0.0.1:8082 npm --prefix frontend run dev
@@ -30,7 +30,7 @@ run-auth:
 	@set -a; . ./.env; set +a; AUTH_ADDR=:8083 AUTH_DATABASE_URL="root:$${MYSQL_ROOT_PASSWORD}@tcp(127.0.0.1:$${MYSQL_PORT:-3306})/auth_db?parseTime=true" go run ./services/auth
 
 run-project:
-	@set -a; . ./.env; set +a; PROJECT_ADDR=:8084 PROJECT_DATABASE_URL="root:$${MYSQL_ROOT_PASSWORD}@tcp(127.0.0.1:$${MYSQL_PORT:-3306})/project_db?parseTime=true" AUTH_SERVICE_URL=http://127.0.0.1:8083 go run ./services/project
+	@set -a; . ./.env; set +a; PROJECT_ADDR=:8084 PROJECT_DATABASE_URL="root:$${MYSQL_ROOT_PASSWORD}@tcp(127.0.0.1:$${MYSQL_PORT:-3306})/project_db?parseTime=true" AUTH_SERVICE_URL=http://127.0.0.1:8083 AI_SERVICE_URL=http://127.0.0.1:8087 go run ./services/project
 
 run-issue:
 	@set -a; . ./.env; set +a; ISSUE_ADDR=:8085 ISSUE_DATABASE_URL="root:$${MYSQL_ROOT_PASSWORD}@tcp(127.0.0.1:$${MYSQL_PORT:-3306})/issue_db?parseTime=true" PROJECT_SERVICE_URL=http://127.0.0.1:8084 NATS_URL="nats://127.0.0.1:$${NATS_PORT:-4222}" go run ./services/issue
@@ -38,11 +38,14 @@ run-issue:
 run-activity:
 	@set -a; . ./.env; set +a; ACTIVITY_ADDR=:8086 ACTIVITY_DATABASE_URL="root:$${MYSQL_ROOT_PASSWORD}@tcp(127.0.0.1:$${MYSQL_PORT:-3306})/activity_db?parseTime=true" PROJECT_SERVICE_URL=http://127.0.0.1:8084 NATS_URL="nats://127.0.0.1:$${NATS_PORT:-4222}" go run ./services/activity
 
+run-ai:
+	@set -a; . ./.env; set +a; AI_ADDR=127.0.0.1:8087 AI_DATABASE_URL="root:$${MYSQL_ROOT_PASSWORD}@tcp(127.0.0.1:$${MYSQL_PORT:-3306})/ai_db?parseTime=true" GATEWAY_INTERNAL_URL=http://127.0.0.1:8082 go run ./services/ai
+
 run-gateway:
-	@set -a; . ./.env; set +a; GATEWAY_ADDR=:8082 AUTH_SERVICE_URL=http://127.0.0.1:8083 PROJECT_SERVICE_URL=http://127.0.0.1:8084 ISSUE_SERVICE_URL=http://127.0.0.1:8085 ACTIVITY_SERVICE_URL=http://127.0.0.1:8086 go run ./gateway
+	@set -a; . ./.env; set +a; GATEWAY_ADDR=:8082 AUTH_SERVICE_URL=http://127.0.0.1:8083 PROJECT_SERVICE_URL=http://127.0.0.1:8084 ISSUE_SERVICE_URL=http://127.0.0.1:8085 ACTIVITY_SERVICE_URL=http://127.0.0.1:8086 AI_SERVICE_URL=http://127.0.0.1:8087 go run ./gateway
 
 docker-up: ## Start only MySQL and NATS, then apply migrations
-	$(DC) --profile app stop auth project issue activity gateway frontend
+	$(DC) --profile app stop auth project issue activity ai gateway frontend
 	$(DC) up -d mysql nats
 	$(MAKE) migrate-up MIGRATE_DATABASE=$(MIGRATE_DATABASE)
 

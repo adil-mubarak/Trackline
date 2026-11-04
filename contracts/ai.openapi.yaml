@@ -1,0 +1,143 @@
+openapi: 3.1.0
+info:
+  title: Trackline AI API
+  version: 1.0.0
+paths:
+  /ai/chat:
+    post:
+      summary: Send a chat message to the configured OpenRouter model with optional read-only tracker retrieval
+      description: >-
+        Authenticated server-side proxy. The API key is held by the AI service
+        and is never returned to the caller. When the caller has an authenticated
+        session, the model may invoke a bounded allowlist of read-only tools that
+        retrieve caller-authorized records through the Gateway from Auth,
+          Project, Issue, and Activity APIs. When the optional GitHub App is
+          configured, it may retrieve bounded metadata for explicitly linked
+          pull requests in a connected installed repository when explicitly
+          enabled for OpenRouter processing. It never reads
+          repository Contents or diffs. Successful turns are saved to the caller-owned
+          AI conversation store for 90 days; prior turns are not sent as context.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string, minLength: 1, maxLength: 8000 }
+                conversation_id: { type: integer, format: int64, minimum: 1, description: Optional conversation the authenticated user owns }
+      responses:
+        '200':
+          description: Model reply
+          content:
+            application/json:
+              schema:
+                type: object
+                  required: [reply, model]
+                  properties:
+                    reply: { type: string }
+                    model: { type: string }
+                    conversation_id: { type: integer, format: int64, minimum: 1 }
+                    charts:
+                      type: array
+                      items:
+                        $ref: '#/components/schemas/IssueCountChart'
+        '400': { description: Invalid request }
+        '401': { description: OpenRouter rejected the configured API key }
+        '402': { description: OpenRouter account requires credits }
+        '404': { description: OpenRouter model was not found }
+        '429': { description: OpenRouter rate limit reached }
+        '503': { description: OpenRouter is not configured }
+        '502': { description: OpenRouter request failed or returned an invalid response }
+        '500': { description: Could not persist the successful chat turn }
+  /ai/conversations:
+    get:
+      summary: List the authenticated user's saved chats
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: after_id, in: query, schema: { type: integer, format: int64, minimum: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 30 } }
+      responses:
+        '200':
+          description: User-owned conversations updated within the 90-day retention period
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Conversation' }
+        '401': { description: Authentication required }
+  /ai/conversations/{conversationId}:
+    delete:
+      summary: Delete a saved chat owned by the authenticated user
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: conversationId, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+      responses:
+        '204': { description: Chat and its messages were deleted }
+        '404': { description: Chat not found }
+        '401': { description: Authentication required }
+  /ai/conversations/{conversationId}/messages:
+    get:
+      summary: Load messages for a user-owned saved chat
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: conversationId, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+      responses:
+        '200': { description: Up to 200 messages ordered chronologically, including optional chart data }
+        '404': { description: Chat not found }
+        '401': { description: Authentication required }
+  /github/repositories:
+    get:
+      summary: List repositories available to the configured GitHub App installation
+      description: Returns only repository IDs and display names from the installation. Credentials and installation tokens remain server-side.
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Installed repositories available for project selection
+          content:
+            application/json:
+              schema:
+                type: array
+                maxItems: 100
+                items:
+                  type: object
+                  required: [id, owner, name]
+                  properties:
+                    id: { type: integer, minimum: 1 }
+                    owner: { type: string }
+                    name: { type: string }
+        '503': { description: GitHub App is not configured }
+        '502': { description: GitHub installation repository list unavailable }
+components:
+  schemas:
+    Conversation:
+      type: object
+      required: [id, title, created_at, updated_at]
+      properties:
+        id: { type: integer, format: int64 }
+        title: { type: string, maxLength: 160 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    IssueCountChart:
+      type: object
+      required: [type, title, note, data]
+      properties:
+        type: { type: string, const: bar }
+        title: { type: string }
+        note: { type: string }
+        data:
+          type: array
+          maxItems: 500
+          items:
+            type: object
+            required: [label, value]
+            properties:
+              label: { type: string }
+              value: { type: integer, minimum: 0 }
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

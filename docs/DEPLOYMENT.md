@@ -1,7 +1,7 @@
 # Trackline deployment: Render Free + external MySQL
 
 This setup deploys Trackline as **one Render Free web service** containing the
-gateway, the four existing Go service processes, and a local NATS broker. Only
+gateway, the four tracker Go service processes, an optional AI service, and a local NATS broker. Only
 the gateway listens on Render's public port; the other services and NATS bind
 to loopback. MySQL runs separately on a MySQL provider such as Aiven Free, and
 the static frontend remains on GitHub Pages.

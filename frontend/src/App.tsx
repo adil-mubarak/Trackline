@@ -1,5 +1,6 @@
-import { FormEvent, useEffect, useRef, useState } from 'react'
+import { FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { ActivityEntry, AdminUser, AnalyticsSnapshot, applyIssueMove, Issue, Project, ProjectBoard, ProjectMember, UserDirectoryPage, UserSuggestion } from './ProjectBoard'
+import ChatPage, { AIChatResult, AIConversationSummary, AIStoredMessage } from './ChatPage'
 
 const apiBaseURL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '')
 
@@ -31,6 +32,7 @@ async function mapConcurrent<T, R>(items: T[], concurrency: number, mapper: (ite
 }
 
 type AuthMode = 'login' | 'register' | 'forgot'
+type GitHubRepository = { id: number; owner: string; name: string }
 
 function userContextFromToken(token: string): { userID: number; role: string; mustChangePassword: boolean } {
   try {
@@ -59,6 +61,28 @@ function initialUserContext() {
 
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem('token') || '')
+  useEffect(() => {
+    const fragment = new URLSearchParams(location.hash.slice(1))
+    const oauthToken = fragment.get('oauth_token')
+    if (oauthToken) {
+      const context = userContextFromToken(oauthToken)
+      localStorage.setItem('token', oauthToken)
+      localStorage.setItem('user_id', String(context.userID))
+      localStorage.setItem('role', context.role)
+      setCurrentOAuthUser(context.userID, context.role, context.mustChangePassword, oauthToken)
+    }
+    if (fragment.has('oauth_token') || fragment.has('oauth_error') || fragment.has('oauth_linked')) {
+      history.replaceState(null, '', `${location.pathname}${location.search}`)
+      if (fragment.has('oauth_error')) setError(oauthErrorMessage(fragment.get('oauth_error') || ''))
+      if (fragment.has('oauth_linked')) setError('Provider account linked successfully.')
+    }
+  }, [])
+  const loadGitHubRepositories = useCallback(async () => await api('/github/repositories') as GitHubRepository[], [])
+  const getProjectRepository = useCallback(async (projectId: number) => await api(`/projects/${projectId}/repository`) as GitHubRepository | null, [])
+  const setProjectRepository = useCallback(async (projectId: number, repositoryID: number | null) => {
+    if (repositoryID === null) await api(`/projects/${projectId}/repository`, { method: 'DELETE' })
+    else await api(`/projects/${projectId}/repository`, { method: 'PUT', body: JSON.stringify({ github_repository_id: repositoryID }) })
+  }, [])
   const [mode, setMode] = useState<AuthMode>('login')
   const [showPassword, setShowPassword] = useState(false)
   const [projects, setProjects] = useState<Project[]>([])
@@ -103,7 +127,7 @@ export default function App() {
   const [createIssueOpen, setCreateIssueOpen] = useState(false)
   const [movePending, setMovePending] = useState(false)
   const [moveToast, setMoveToast] = useState('')
-  const [screen, setScreen] = useState<'board' | 'projects' | 'calendar' | 'admin' | 'my-issues' | 'activity' | 'analytics' | 'users'>('board')
+  const [screen, setScreen] = useState<'board' | 'projects' | 'calendar' | 'admin' | 'my-issues' | 'activity' | 'analytics' | 'users' | 'chat'>('board')
   const projectRequestId = useRef(0)
   const issueRequestId = useRef(0)
   const myIssuesRequestId = useRef(0)
@@ -114,6 +138,29 @@ export default function App() {
   const movePendingRef = useRef(false)
   const selectedProjectRef = useRef<number | null>(selected)
   selectedProjectRef.current = selected
+
+  function setCurrentOAuthUser(userID: number, role: string, passwordResetRequired: boolean, accessToken: string) {
+    setCurrentUserID(userID)
+    setGlobalRole(role)
+    setMustChangePassword(passwordResetRequired)
+    setToken(accessToken)
+  }
+
+  function oauthErrorMessage(code: string) {
+    if (code === 'account_link_required') return 'An account already uses this email. Sign in with that account, then link this provider from your profile—accounts are never merged automatically.'
+    if (code === 'provider_already_linked') return 'This account already has a different identity linked for that provider. No changes were made; contact an administrator if it needs to be replaced.'
+    if (code === 'provider_unavailable') return 'This sign-in provider is not configured yet.'
+    return 'Could not complete provider sign-in. Please try again.'
+  }
+
+  async function linkOAuthProvider(provider: 'github' | 'google') {
+    try {
+      const result = await api(`/auth/oauth/${provider}/link`, { method: 'POST' }) as { authorization_url: string }
+      window.location.assign(result.authorization_url)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not link provider account.')
+    }
+  }
 
   const selectedProject = projects.find(project => project.id === selected)
     || (globalRole === 'admin' ? adminProjects.find(project => project.id === selected) : undefined)
@@ -269,7 +316,7 @@ export default function App() {
     try {
       await api('/projects', {
         method: 'POST',
-        body: JSON.stringify({ name: form.get('name'), description: form.get('description') || '', member_ids: memberIDs }),
+        body: JSON.stringify({ name: form.get('name'), description: form.get('description') || '', member_ids: memberIDs, ...(String(form.get('github_repository_id') || '') ? { github_repository_id: Number(form.get('github_repository_id')) } : {}) }),
       })
       target.reset()
       await loadProjects()
@@ -607,6 +654,14 @@ export default function App() {
     return result
   }
 
+  async function askTrackerAssistant(message: string, conversationID?: number): Promise<AIChatResult> {
+    return await api('/ai/chat', { method: 'POST', body: JSON.stringify({ message, ...(conversationID ? { conversation_id: conversationID } : {}) }) }) as AIChatResult
+  }
+
+  const loadAIConversations = useCallback(async () => await api('/ai/conversations?limit=30') as AIConversationSummary[], [])
+  const loadAIConversationMessages = useCallback(async (conversationID: number) => await api(`/ai/conversations/${conversationID}/messages`) as AIStoredMessage[], [])
+  const deleteAIConversation = useCallback(async (conversationID: number) => { await api(`/ai/conversations/${conversationID}`, { method: 'DELETE' }) }, [])
+
   async function loadUserDirectory(afterID: number | null): Promise<UserDirectoryPage> {
     const params = new URLSearchParams({ limit: '25' })
     if (afterID !== null) params.set('after_id', String(afterID))
@@ -740,6 +795,12 @@ export default function App() {
                 <button className="primary-button auth-submit" onClick={() => { setMode('login'); setError('') }}>Back to sign in</button>
               </>
             ) : (
+              <>
+              <div className="auth-provider-buttons" aria-label="Sign in with a provider">
+                <button type="button" className="auth-provider-button" onClick={() => { window.location.assign(`${apiBaseURL}/api/auth/oauth/github`) }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 .9a11.1 11.1 0 0 0-3.51 21.63c.56.1.76-.24.76-.54v-2.1c-3.1.67-3.76-1.32-3.76-1.32-.5-1.28-1.24-1.62-1.24-1.62-1.01-.69.08-.68.08-.68 1.12.08 1.71 1.15 1.71 1.15 1 1.7 2.63 1.21 3.27.93.1-.72.39-1.21.71-1.49-2.48-.28-5.09-1.24-5.09-5.52 0-1.22.44-2.22 1.15-3-.12-.28-.5-1.42.11-2.96 0 0 .94-.3 3.05 1.15a10.6 10.6 0 0 1 5.55 0c2.11-1.45 3.05-1.15 3.05-1.15.61 1.54.23 2.68.11 2.96.72.78 1.15 1.78 1.15 3 0 4.29-2.61 5.23-5.1 5.51.4.35.76 1.03.76 2.08v3.06c0 .3.2.65.77.54A11.1 11.1 0 0 0 12 .9Z" /></svg>GitHub</button>
+                <button type="button" className="auth-provider-button" onClick={() => { window.location.assign(`${apiBaseURL}/api/auth/oauth/google`) }}><span className="google-provider-mark" aria-hidden="true">G</span>Google</button>
+              </div>
+              <div className="auth-divider"><span>or continue with email</span></div>
               <form onSubmit={authenticate}>
                 <label>Email address<input name="email" type="email" placeholder="name@company.com" required /></label>
                 <label className="password-label">
@@ -754,6 +815,7 @@ export default function App() {
                 </label>
                 <button className="primary-button auth-submit" disabled={busy}>{busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create account'}<span className="material-symbols-outlined" aria-hidden="true">arrow_forward</span></button>
               </form>
+              </>
             )}
             <p className="switch">
               {mode === 'register' ? 'Already have an account?' : mode === 'forgot' ? 'Remember your password?' : 'New to Trackline?'}{' '}
@@ -840,6 +902,11 @@ export default function App() {
         email={localStorage.getItem('email') || ''}
         onSelectProject={selectProject}
         screen={screen}
+        onShowChat={() => setScreen('chat')}
+        onAskTrackerAssistant={askTrackerAssistant}
+        onLoadAIConversations={loadAIConversations}
+        onLoadAIConversationMessages={loadAIConversationMessages}
+        onDeleteAIConversation={deleteAIConversation}
         onShowProjects={showProjects}
         onShowCalendar={() => setScreen('calendar')}
         onShowAdmin={() => setScreen('admin')}
@@ -856,10 +923,14 @@ export default function App() {
         onOpenBoard={() => setScreen('board')}
         onAddProject={addProjectFocus}
         onCreateProject={createProject}
+        onLoadGitHubRepositories={loadGitHubRepositories}
+        onGetProjectRepository={getProjectRepository}
+        onSetProjectRepository={setProjectRepository}
         onDeleteProject={deleteProject}
         onLoadUserDirectory={loadUserDirectory}
         onAddIssue={addIssueFocus}
         onLogout={logout}
+        onLinkOAuthProvider={linkOAuthProvider}
         onDismissError={() => setError('')}
         onQueryChange={setQuery}
         onStatusFilterChange={setStatusFilter}
@@ -887,7 +958,7 @@ export default function App() {
         onClose={() => setCreateIssueOpen(false)}
         onSubmit={createIssue}
       />}
-      {selectedIssue && <IssueDetailDrawer issue={selectedIssue} projectId={selectedIssue.project_id} members={members} onClose={() => setSelectedIssue(null)} onSaved={async () => {
+      {selectedIssue && <IssueDetailDrawer issue={selectedIssue} projectId={selectedIssue.project_id} members={members} canManageProject={globalRole === 'admin' || members.some(member => member.user_id === currentUserID && member.role === 'admin')} onClose={() => setSelectedIssue(null)} onSaved={async () => {
         setSelectedIssue(null)
         await loadIssues(selectedIssue.project_id)
         if (screen === 'my-issues') await loadMyIssues()
@@ -897,9 +968,10 @@ export default function App() {
 }
 
 type IssueLabel = { id: number; name: string }
+type IssuePullRequest = { repository_id: number; number: number; owner: string; repo: string; html_url: string }
 type ActivityEvent = { id: number; issue_id: number; actor_id: number; event_type: string; payload: Record<string, unknown>; occurred_at: string }
 
-function IssueDetailDrawer({ issue, projectId, members, onClose, onSaved }: { issue: Issue; projectId: number; members: ProjectMember[]; onClose: () => void; onSaved: () => Promise<void> }) {
+function IssueDetailDrawer({ issue, projectId, members, canManageProject, onClose, onSaved }: { issue: Issue; projectId: number; members: ProjectMember[]; canManageProject: boolean; onClose: () => void; onSaved: () => Promise<void> }) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [labels, setLabels] = useState<IssueLabel[]>([])
@@ -908,6 +980,10 @@ function IssueDetailDrawer({ issue, projectId, members, onClose, onSaved }: { is
   const [activeTab, setActiveTab] = useState<'details' | 'activity'>('details')
   const [labelName, setLabelName] = useState('')
   const [savingLabel, setSavingLabel] = useState(false)
+  const [pullRequests, setPullRequests] = useState<IssuePullRequest[]>([])
+  const [repository, setRepository] = useState<GitHubRepository | null>(null)
+  const [pullRequestNumber, setPullRequestNumber] = useState('')
+  const [savingPullRequest, setSavingPullRequest] = useState(false)
   const dialogRef = useRef<HTMLElement>(null)
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
@@ -919,6 +995,12 @@ function IssueDetailDrawer({ issue, projectId, members, onClose, onSaved }: { is
     }).catch(() => {
       if (current) setLabels([])
     })
+    api(`/issues/${issue.id}/pull-requests`).then((result: IssuePullRequest[]) => {
+      if (current) setPullRequests(result)
+    }).catch(() => { if (current) setPullRequests([]) })
+    api(`/projects/${projectId}/repository`).then((result: GitHubRepository | null) => {
+      if (current) setRepository(result)
+    }).catch(() => { if (current) setRepository(null) })
     if (projectId) {
       api(`/activity?project_id=${projectId}&limit=100`).then((result: ActivityEvent[]) => {
         if (current) {
@@ -934,6 +1016,35 @@ function IssueDetailDrawer({ issue, projectId, members, onClose, onSaved }: { is
     }
     return () => { current = false }
   }, [issue.id, projectId])
+
+  async function addPullRequest() {
+    const number = Number(pullRequestNumber)
+    if (!Number.isSafeInteger(number) || number <= 0) {
+      setError('Enter a valid pull request number.')
+      return
+    }
+    setSavingPullRequest(true)
+    setError('')
+    try {
+      const linked = await api(`/issues/${issue.id}/pull-requests`, { method: 'POST', body: JSON.stringify({ number }) }) as IssuePullRequest
+      setPullRequests(current => current.some(item => item.number === linked.number && item.repository_id === linked.repository_id) ? current : [...current, linked])
+      setPullRequestNumber('')
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not link pull request')
+    } finally {
+      setSavingPullRequest(false)
+    }
+  }
+
+  async function removePullRequest(link: IssuePullRequest) {
+    setError('')
+    try {
+      await api(`/issues/${issue.id}/pull-requests/${link.number}?repository_id=${link.repository_id}`, { method: 'DELETE' })
+      setPullRequests(current => current.filter(item => !(item.number === link.number && item.repository_id === link.repository_id)))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not unlink pull request')
+    }
+  }
 
   useEffect(() => {
     const previouslyFocused = document.activeElement as HTMLElement | null
@@ -1062,6 +1173,12 @@ function IssueDetailDrawer({ issue, projectId, members, onClose, onSaved }: { is
                 <button className="secondary-button" type="button" onClick={() => void addLabel()} disabled={savingLabel || !labelName.trim()}>{savingLabel ? 'Adding…' : 'Add label'}</button>
               </div>
             </div>
+            <section className="drawer-labels issue-pull-requests" aria-labelledby="linked-pr-title">
+              <div className="drawer-section-title"><h3 id="linked-pr-title">Linked pull requests</h3></div>
+              {pullRequests.length ? <ul>{pullRequests.map(link => <li key={`${link.repository_id}-${link.number}`}><a href={link.html_url} target="_blank" rel="noreferrer">{link.owner}/{link.repo}#{link.number}<span className="material-symbols-outlined" aria-hidden="true">open_in_new</span></a>{canManageProject && <button type="button" className="text-button" onClick={() => void removePullRequest(link)}>Unlink</button>}</li>)}</ul> : <p className="label-empty">No pull requests linked.</p>}
+              {!repository && <p className="label-empty">Connect a GitHub repository to this project before linking a PR.</p>}
+              {repository && canManageProject && <div className="add-label-form"><label htmlFor="pull-request-number">{repository.owner}/{repository.name} · PR number</label><input id="pull-request-number" inputMode="numeric" value={pullRequestNumber} onChange={event => setPullRequestNumber(event.target.value)} placeholder="e.g. 42" /><button type="button" className="secondary-button" onClick={() => void addPullRequest()} disabled={savingPullRequest || !pullRequestNumber.trim()}>{savingPullRequest ? 'Linking…' : 'Link PR'}</button></div>}
+            </section>
           </div>
         ) : (
           <div className="drawer-content activity-content">
@@ -1148,7 +1265,7 @@ function NewIssueModal({ projects, selectedProjectId, members: initialMembers, o
           <button className="icon-button" type="button" aria-label="Close new issue" onClick={onClose}><span className="material-symbols-outlined" aria-hidden="true">close</span></button>
         </header>
         <form className="new-issue-form" onSubmit={onSubmit}>
-          <label>Project
+          <label className="issue-project-picker">Project
             <select name="project_id" aria-label="Issue project" value={projectId || ''} onChange={event => setProjectId(Number(event.target.value))} required>
               {projects.map(project => <option value={project.id} key={project.id}>{project.name}</option>)}
             </select>
@@ -1157,6 +1274,7 @@ function NewIssueModal({ projects, selectedProjectId, members: initialMembers, o
             <input name="title" placeholder="Issue title..." maxLength={240} required />
           </label>
           <label>Description
+            <span className="issue-description-toolbar" aria-hidden="true"><b>B</b><i>I</i><code>&lt;/&gt;</code><span>↗</span><span>☷</span><small>Markdown supported</small></span>
             <textarea name="description" rows={6} placeholder="Add a detailed description or reproduction steps..." />
           </label>
           <div className="new-issue-fields">
@@ -1168,6 +1286,7 @@ function NewIssueModal({ projects, selectedProjectId, members: initialMembers, o
           <label>Labels <span className="optional-note">Comma-separated (applied after creation)</span>
             <input name="labels" placeholder="e.g. Security, iOS" maxLength={256} />
           </label>
+          <label className="issue-attachments" aria-label="Attachments"><span className="material-symbols-outlined" aria-hidden="true">attach_file</span><strong>Attachments</strong><span>File attachments are not available yet. Add links or reproduction steps in the description.</span></label>
           {error && <p className="error-banner" role="alert">{error}</p>}
           <footer className="new-issue-footer">
             <button className="secondary-button" type="button" onClick={onClose}>Cancel</button>

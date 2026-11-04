@@ -7,7 +7,8 @@ RUN CGO_ENABLED=0 go build -trimpath -o /out/gateway ./gateway \
     && CGO_ENABLED=0 go build -trimpath -o /out/auth ./services/auth \
     && CGO_ENABLED=0 go build -trimpath -o /out/project ./services/project \
     && CGO_ENABLED=0 go build -trimpath -o /out/issue ./services/issue \
-    && CGO_ENABLED=0 go build -trimpath -o /out/activity ./services/activity
+    && CGO_ENABLED=0 go build -trimpath -o /out/activity ./services/activity \
+    && CGO_ENABLED=0 go build -trimpath -o /out/ai ./services/ai
 RUN CGO_ENABLED=0 go install -tags 'mysql' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.3
 
 FROM nats:2.10.26-alpine AS nats

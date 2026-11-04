@@ -38,12 +38,15 @@ paths:
   /issues/analytics:
     get:
       summary: Get current issue counts for a project
+      description: include_assignees=true additionally returns counts of issues marked done grouped by assignee ID plus an unassigned count. Requires project membership.
       parameters:
         - { name: project_id, in: query, required: true, schema: { type: integer, format: int64 } }
+        - { name: include_assignees, in: query, required: false, schema: { type: boolean, default: false } }
       responses:
-        '200': { description: Total counts by status and priority plus open high/critical count }
+        '200': { description: Total counts by status and priority plus open high/critical count; optionally per-assignee done counts }
         '400': { description: Invalid or missing project_id }
         '403': { description: User is not a project member }
+        '413': { description: Too many assignees to return in one response }
   /projects/{projectId}/issues/{issueId}/move:
     parameters:
       - { name: projectId, in: path, required: true, schema: { type: integer } }
@@ -102,6 +105,44 @@ paths:
       responses:
         '201': { description: Dependency added }
         '409': { description: Dependency creates a cycle }
+  /issues/{issueId}/pull-requests:
+    parameters:
+      - { name: issueId, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+    get:
+      summary: List explicit pull request links for an issue
+      description: Project members can read at most five explicit links, including links retained from a prior repository connection.
+      responses:
+        '200': { description: Pull request links, with at most five per issue }
+        '403': { description: User is not a project member }
+    post:
+      summary: Link a pull request to an issue
+      description: Requires a project admin or platform admin. The repository is taken from the project's verified connection; callers provide only the positive GitHub pull request number.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [number]
+              properties:
+                number: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '201': { description: Pull request linked }
+        '400': { description: Invalid pull request number }
+        '403': { description: Project admin required }
+        '409': { description: No connected repository, duplicate link, or issue link limit reached }
+  /issues/{issueId}/pull-requests/{number}:
+    parameters:
+      - { name: issueId, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+      - { name: number, in: path, required: true, schema: { type: integer, format: int64, minimum: 1 } }
+      - { name: repository_id, in: query, required: true, schema: { type: integer, format: int64, minimum: 1 }, description: Canonical repository ID from the list response, including for previous project connections. }
+    delete:
+      summary: Remove a pull request link from an issue
+      description: Requires a project admin or platform admin.
+      responses:
+        '204': { description: Pull request link removed }
+        '403': { description: Project admin required }
+        '404': { description: Pull request link not found }
   /issues/work-order:
     get:
       summary: Return a dependency-respecting work order for a project

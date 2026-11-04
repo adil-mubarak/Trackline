@@ -1,19 +1,39 @@
 # Architecture
 
-The application is a Go monorepo with a gateway and four independently owned
-services. Auth, Project, Issue, and Activity each use a separate MySQL database
+The application is a Go monorepo with a gateway and independently owned
+services. An AI service provides authenticated chat and calls OpenRouter; it
+owns its transcript database (`ai_db`) and does not query tracker databases.
+Auth, Project, Issue, and Activity each use a separate MySQL database
 (`auth_db`, `project_db`, `issue_db`, and `activity_db`). The Compose setup
 starts the MySQL and NATS dependencies, applies migrations, and starts all
 services plus the static React frontend.
 
 Services communicate through APIs rather than querying another service's
-tables. The Issue service calls Project for membership checks and caches the
+tables. The AI service stores successful chat turns scoped to authenticated
+user IDs, supports owner-checked deletion, and purges transcripts after 90 days.
+The Issue service calls Project for membership checks and caches the
 result briefly in a bounded LRU. Issue-created and status-changed events are
 published to NATS for Activity to consume. The gateway is the frontend's single
 API entry point: it validates HS256 JWTs and forwards the authenticated user ID
 and role to internal services. The frontend proxies `/api/*` to the gateway.
-The gateway readiness endpoint probes all service readiness endpoints, and the
-gateway drains requests on SIGINT/SIGTERM with a bounded shutdown period.
+The gateway readiness endpoint probes the four required data services, and the
+gateway drains requests on SIGINT/SIGTERM with a bounded shutdown period. AI is
+optional and a provider outage does not make core tracker routes unready.
+
+The AI service is routed through the Gateway at `/ai/chat`; the Gateway
+validates the caller's JWT before forwarding. OpenRouter credentials are configured
+only on the AI service. The current chat endpoint sends the submitted message to
+OpenRouter and exposes a bounded read-only tool set for project lists/details,
+issue analytics/lists/details, project activity, and project members. The AI
+service creates a per-chat in-process MCP server/client session using the
+official Go SDK. OpenRouter's tool definitions are built from MCP tool discovery;
+model tool calls are dispatched through `CallTool`, then the MCP handlers call
+the Gateway with the caller's bearer token so owning APIs enforce permissions.
+The caller token is not included in OpenRouter requests. There is no separately
+reachable MCP endpoint or MCP deployable, and the AI service never queries
+service-owned tables. Tool calls are capped at six across three rounds, each
+Gateway response at 48 KiB, and aggregate tool evidence at 128 KiB. GitHub
+evidence retrieval is not implemented yet.
 
 Issue list filters are assembled in `services/issue/query.go`: filter values are
 SQL parameters, while sort columns and directions come from fixed allowlists.

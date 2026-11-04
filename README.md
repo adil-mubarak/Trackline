@@ -30,6 +30,7 @@ flowchart TD
 | Project service | Projects, members, membership checks | `project_db` |
 | Issue service | Issues, labels, filtering, search, dependencies | `issue_db` |
 | Activity service | Activity log and feed from issue events | `activity_db` |
+| AI service | Read-only assistant and user-owned chat history | `ai_db` |
 
 Each service owns its database and accesses another service only through its API. The Issue service stores user IDs rather than joining against Auth data. It checks project membership through the Project service, with a timeout and an LRU cache. Issue creation and status changes are sent asynchronously to the Activity service through a broker.
 
@@ -51,6 +52,7 @@ Each service owns its database and accesses another service only through its API
 - An activity feed populated from issue events
 - A React UI for projects and issues, including filters and a status-grouped Kanban view
 - Health/readiness endpoints, structured logs, request IDs, graceful shutdown, and outgoing-call timeouts
+- Proposed optional AI chat and read-only MCP insights plan: [`docs/AI_INSIGHTS.md`](docs/AI_INSIGHTS.md)
 
 ### Data structures and algorithms
 
@@ -86,6 +88,13 @@ Each service owns its database and accesses another service only through its API
   deactivation/reactivation.
 - Global admins can assign active accounts to projects from the Users page;
   project managers retain project-scoped member controls.
+ - Authenticated OpenRouter chat endpoint (`POST /ai/chat`) is server-side;
+  the frontend includes an AI Copilot panel and full-page entry, and bounded read-only tools
+  retrieve authorized tracker data through service APIs. Each submitted question
+   is independent; conversation history is not sent to the model. Optional
+   GitHub App integration supports installed-repository connections and bounded,
+   read-only evidence for explicitly linked PRs; see [`docs/github-app.md`](docs/github-app.md).
+   Both OpenRouter and GitHub are optional for the core tracker.
 
 ## Build roadmap
 
@@ -182,7 +191,8 @@ For local development, run `make run-trackline` in another terminal. The legacy
 For the all-container setup, use `make docker-app-up`; the UI is available at
 `http://localhost:3000` and gateway at `http://localhost:8082`. MySQL is
 available at `localhost:3306` (localhost only), with separate `auth_db`,
-`project_db`, `issue_db`, and `activity_db` databases. To stop the containers:
+`project_db`, `issue_db`, `activity_db`, and `ai_db` databases. AI chat history
+is scoped to its owner and retained for 90 days. To stop the containers:
 
 The seed script uses demo accounts `demo.admin@example.test` and
 `demo.member@example.test` with local-development passwords. Override them with

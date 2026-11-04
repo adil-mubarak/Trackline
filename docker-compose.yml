@@ -28,17 +28,33 @@ services:
       retries: 20
       start_period: 10s
 
-  migrate:
-    image: migrate/migrate:v4.18.3
+  db-bootstrap:
+    image: mysql:8.4
     depends_on:
       mysql:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
     command:
+      - >-
+        mysql --protocol=TCP -h mysql -uroot -p"$$MYSQL_ROOT_PASSWORD"
+        < /bootstrap/01-create-databases.sql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+    volumes:
+      - ./db/init/01-create-databases.sql:/bootstrap/01-create-databases.sql:ro
+    restart: "no"
+
+  migrate:
+    image: migrate/migrate:v4.18.3
+    depends_on:
+      db-bootstrap:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "-c"]
+    command:
       - |
         set -eu
-        case "$${MIGRATE_DATABASE:-all}" in all|auth_db|project_db|issue_db|activity_db) ;; *) echo "Unknown MIGRATE_DATABASE: $${MIGRATE_DATABASE}" >&2; exit 2 ;; esac
-        for database in auth_db project_db issue_db activity_db; do
+        case "$${MIGRATE_DATABASE:-all}" in all|auth_db|project_db|issue_db|activity_db|ai_db) ;; *) echo "Unknown MIGRATE_DATABASE: $${MIGRATE_DATABASE}" >&2; exit 2 ;; esac
+        for database in auth_db project_db issue_db activity_db ai_db; do
           if [ "$${MIGRATE_DATABASE:-all}" != all ] && [ "$${MIGRATE_DATABASE}" != "$$database" ]; then
             continue
           fi
@@ -61,6 +77,12 @@ services:
       AUTH_ADDR: ":8081"
       AUTH_DATABASE_URL: root:${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}@tcp(mysql:3306)/auth_db?parseTime=true
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      OAUTH_CALLBACK_BASE_URL: ${OAUTH_CALLBACK_BASE_URL:-}
+      OAUTH_FRONTEND_URL: ${OAUTH_FRONTEND_URL:-}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -79,6 +101,7 @@ services:
       PROJECT_ADDR: ":8082"
       PROJECT_DATABASE_URL: root:${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}@tcp(mysql:3306)/project_db?parseTime=true
       AUTH_SERVICE_URL: http://auth:8081
+      AI_SERVICE_URL: http://ai:8087
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -136,6 +159,33 @@ services:
       timeout: 3s
       retries: 10
 
+  ai:
+    profiles: ["app"]
+    build:
+      context: .
+      dockerfile: services/ai/Dockerfile
+    environment:
+      AI_ADDR: ":8087"
+      AI_DATABASE_URL: root:${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}@tcp(mysql:3306)/ai_db?parseTime=true
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-nvidia/nemotron-3-ultra-550b-a55b:free}
+      GATEWAY_INTERNAL_URL: http://gateway:8082
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_INSTALLATION_ID: ${GITHUB_INSTALLATION_ID:-}
+      GITHUB_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+      GITHUB_EVIDENCE_TO_OPENROUTER: ${GITHUB_EVIDENCE_TO_OPENROUTER:-false}
+      GITHUB_CODE_TO_OPENROUTER: ${GITHUB_CODE_TO_OPENROUTER:-false}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8087/health >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   gateway:
     profiles: ["app"]
     build:
@@ -149,6 +199,7 @@ services:
       PROJECT_SERVICE_URL: http://project:8082
       ISSUE_SERVICE_URL: http://issue:8083
       ACTIVITY_SERVICE_URL: http://activity:8084
+      AI_SERVICE_URL: http://ai:8087
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
     depends_on:
@@ -159,6 +210,8 @@ services:
       issue:
         condition: service_healthy
       activity:
+        condition: service_healthy
+      ai:
         condition: service_healthy
 
   frontend:

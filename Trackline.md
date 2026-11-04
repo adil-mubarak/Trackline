@@ -13,13 +13,14 @@ flowchart LR
     P4 --> P5["5 DSA<br/>Graph, trie, limiter"]
     P5 --> P6["6 Frontend<br/>React via gateway"]
     P6 --> P7["7 Ship<br/>Tests, docs"]
+    P7 -. "optional extension" .-> AI["AI Copilot<br/>MCP tools, grounded reports"]
 ```
 
 Phases run in order: contracts and auth first, each service next, the frontend last, and every phase ends with its documentation.
 
 ## Services
 
-The system is split into an API gateway and four services. Keep it to four, because each extra service adds its own setup, database, Dockerfile, tests and docs.
+The core tracker has an API gateway and four independently owned domain services. The optional AI Copilot is a separately deployable fifth service with its own database; it is an explicit Phase 7 extension, not a replacement for or prerequisite to the core tracker. MCP is an in-process tool adapter inside AI, not another deployable service.
 
 ```mermaid
 flowchart TD
@@ -30,6 +31,10 @@ flowchart TD
     ISS -- "membership check (LRU cache)" --> PROJ
     ISS -- "IssueCreated, StatusChanged" --> BR["Event broker: NATS or Redis Streams"]
     BR -- "consumes" --> ACT["Activity service<br/>Activity log, notifications<br/>Database: activity_db"]
+    GW -. "optional /ai routes" .-> AI["AI service<br/>Chat orchestration + in-process MCP<br/>Database: ai_db"]
+    AI --> OR["OpenRouter<br/>External model provider"]
+    AI -. "allowlisted tool calls" .-> MCP["MCP adapter<br/>in-process; no public endpoint"]
+    MCP --> GW
 ```
 
 | Service | Owns | Own database |
@@ -39,11 +44,14 @@ flowchart TD
 | Project service | Projects, members, permissions | `project_db` |
 | Issue service (core) | Issues, labels, filtering, search | `issue_db` |
 | Activity service | Activity log, comments feed, notifications | `activity_db` |
+| AI service (optional) | Read-only AI chat orchestration and user-owned transcript history | `ai_db` |
 
 - **Database per service:** one MySQL container with separate databases is fine, but services never query each other's tables.
 - **Sync calls:** gRPC or REST between services, for example the Issue service asking the Project service whether a user is a member.
 - **Async events:** `IssueCreated` and `StatusChanged` go through a broker (NATS or Redis Streams), and the Activity service consumes them.
 - **No cross-service joins:** the Issue service stores user IDs only, and names are enriched at the gateway or in the UI. Explain this choice in your architecture docs.
+- **Optional AI boundary:** the AI service owns `ai_db`; only AI accesses its transcript tables. AI retrieves tracker data by calling allowlisted APIs through the Gateway, never by querying Auth, Project, Issue, or Activity databases.
+- **MCP boundary:** the current implementation uses the official Go MCP SDK in an in-process server/client session. It exposes bounded, read-only tools; there is no public MCP endpoint or separate MCP service. The Gateway authenticates the caller and the owning service enforces access.
 
 ## Inside each service
 
@@ -71,6 +79,7 @@ Every service keeps the same four layers; the filter query builder in the Issue 
 - OpenAPI specs (or `.proto` files for gRPC) kept in a `contracts/` folder
 - GitHub Actions CI that runs lint, tests and build
 - Unit tests plus a few integration tests for service-to-service calls
+- Optional AI feature must be authenticated, read-only, bounded, and independently disableable when the provider is unavailable
 - Graceful shutdown, request IDs passed across services, and timeouts on every outgoing call
 
 ## Data structures and algorithms
@@ -193,12 +202,87 @@ These come up in a real tracker. Make each one a small, tested package with benc
 - Unit tests per service and a few integration tests for service-to-service calls
 - Structured logs and timeouts checked on every outgoing call
 - Seed script with demo data
-- Optional AI feature: suggest a priority and labels from the issue description
+
+### Optional extension: AI Copilot and MCP tools
+
+This extension is optional and must not make the core tracker depend on an AI
+provider. It describes the current implementation; it does not add or reorder a
+core build phase.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI as React Copilot
+    participant GW as Gateway
+    participant AI as AI service
+    participant LLM as OpenRouter
+    participant MCP as In-process MCP adapter
+    participant API as Owning tracker API
+    participant DB as AI-owned ai_db
+    User->>UI: Ask question / open saved chat
+    UI->>GW: Authenticated chat or history request
+    GW->>GW: Validate JWT; attach caller identity
+    GW->>AI: Forward chat request
+    alt Deterministic issue-count summary or chart
+        AI->>GW: Request scoped project/issue/user counts with caller token
+        GW->>API: Forward to owning APIs
+        API->>API: Enforce caller/project permissions
+        API-->>AI: Authorized aggregate data
+        AI->>AI: Build factual text and typed chart data
+    else Model-generated answer
+        AI->>LLM: Send prompt (no bearer token)
+        LLM-->>AI: Answer or bounded tool request
+        opt Model requests tracker facts
+            AI->>MCP: Dispatch allowlisted read-only tool
+            MCP->>GW: Call owning API with caller bearer token
+            GW->>API: Forward authenticated request
+            API->>API: Enforce caller/project permissions
+            API-->>MCP: Bounded authorized evidence
+            MCP-->>AI: Tool result as untrusted evidence
+            AI->>LLM: Continue with evidence
+            LLM-->>AI: Grounded answer
+        end
+    end
+    AI->>DB: Save successful user/assistant turn
+    AI-->>GW: Answer and optional typed chart data
+    GW-->>UI: Response
+```
+
+- Use the official Go MCP SDK with an in-process server/client session inside
+  AI. MCP tool discovery supplies the model's function definitions; model tool
+  calls are dispatched through MCP. There is no separately deployed MCP server,
+  public MCP endpoint, or database access from MCP tools.
+- Initial tools are allowlisted, read-only project, issue, activity, and member
+  lookups. Enforce caller authorization in owning APIs. Bound tool calls,
+  rounds, arguments, output size, aggregate evidence, request size, and deadlines.
+  Treat retrieved text as untrusted; do not let prompt content enable tools,
+  widen access, or authorize writes.
+- Keep the OpenRouter key server-side. Never send caller credentials to the
+  model provider. Review provider data handling before sending tracker or GitHub
+  evidence in production. AI may be disabled when the provider is unavailable.
+- AI alone owns the `ai_db` transcript schema. Save successful turns per user,
+  retain them for 90 days, support owner-only load/delete, and purge expired
+  records hourly. Saved turns are shown in history but prior turns are not sent
+  as model context by default.
+- Resolve activity actor IDs through the Auth API before model use; show names
+  or “Unknown user,” never raw actor IDs. Charts are deterministic and limited
+  to source-backed issues marked done: project counts and alphabetical,
+  unranked user counts. Label them as tracker status counts, not performance
+  scores or evidence of quality/productivity/current work.
+- Optional GitHub evidence is limited to explicitly issue-linked PRs in a
+  project-configured repository. Metadata and bounded source-diff processing
+  are separate opt-ins; the AI must not infer links or claim it reviewed more
+  than the supplied evidence.
+- Test tool allowlists, authorization/cross-project isolation, bounds and
+  failures, prompt injection, credential non-disclosure, actor-name resolution,
+  transcript ownership/retention/deletion, chart semantics, and frontend
+  loading/error/history/chart behavior. Record provider/configuration and
+  deployment limits in `docs/AI_INSIGHTS.md` and `docs/ARCHITECTURE.md`.
 
 **Assignment (final pass)**
 
 - Finish `README.md` with features, tech, setup, and run steps
-- Complete `PROMPTS.md`, `CONTEXT.md`, `AGENTS-SKILLS.md`, and `MODELS-MCP.md`
+- Complete `PROMPTS.md`, `docs/CONTEXT.md`, `AGENTS-SKILLS.md`, and `MODELS-MCP.md`
 - Push everything and share the repo link
 
 ## Summary
@@ -212,6 +296,6 @@ These come up in a real tracker. Make each one a small, tested package with benc
 | 4 | Broker and Activity service | Must |
 | 5 | DSA packages | Must (graph, trie, rate limiter), optional (heap, Union-Find) |
 | 6 | React frontend | Must |
-| 7 | Tests, observability, final docs | Must (docs), optional (AI feature) |
+| 7 | Tests, observability, final docs; optional AI Copilot/MCP | Must (tests/docs), optional (AI service/provider integrations) |
 
-**The minimum viable submission is every phase above plus the documentation.** The min-heap, Union-Find and AI feature are the only optional parts.
+**The minimum viable submission is every core phase above plus the documentation.** The min-heap, Union-Find, AI service, OpenRouter integration, and GitHub evidence are optional. If AI is enabled, treat it as an explicit Phase 7 extension and preserve the service-ownership, authorization, privacy, and unranked-reporting boundaries above.

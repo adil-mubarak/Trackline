@@ -33,10 +33,11 @@ paths:
                   maxItems: 50
                   uniqueItems: true
                   items: { type: integer, format: int64, minimum: 1 }
+                github_repository_id: { type: integer, format: int64, minimum: 1, description: Installed GitHub repository numeric ID; canonical owner and name are verified by the AI service. }
       responses:
         '201': { description: Project created; creator is project admin and selected users are members }
         '400': { description: Invalid project or any selected user is inactive or unknown }
-        '502': { description: Auth service unavailable while validating selected users }
+        '502': { description: Auth service unavailable while validating selected users or GitHub repository verification unavailable }
   /projects/{projectId}:
     parameters:
       - name: projectId
@@ -95,8 +96,28 @@ paths:
       summary: Check whether the caller has project access or whether a target user is a stored project member
       parameters:
         - { name: user_id, in: query, description: Optional target user ID; the caller has effective access as a global admin and may check themselves, while other targets must have a stored active membership, schema: { type: integer, format: int64 } }
+        - { name: require_admin, in: query, description: Return whether the caller is a project administrator (or platform administrator), schema: { type: boolean } }
       responses:
         '200': { description: Membership result }
+  /projects/{projectId}/repository:
+    get:
+      summary: Get the project's GitHub repository connection (project members and platform admins)
+      responses: { '200': { description: Repository connection, or null when none configured }, '403': { description: Project membership required } }
+    put:
+      summary: Set or replace the project's GitHub repository connection (project or platform admins only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [github_repository_id]
+              properties:
+                github_repository_id: { type: integer, format: int64, minimum: 1 }
+      responses: { '200': { description: Verified repository connection }, '403': { description: Project admin required }, '502': { description: Repository could not be verified or AI service unavailable } }
+    delete:
+      summary: Remove the project's GitHub repository connection (project or platform admins only)
+      responses: { '204': { description: Connection removed }, '403': { description: Project admin required } }
 components:
   securitySchemes:
     bearerAuth:

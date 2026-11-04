@@ -19,9 +19,12 @@ import (
 type Handler struct {
 	db     *sql.DB
 	secret []byte
+	oauth  OAuthSettings
 }
 
-func NewHandler(db *sql.DB, secret []byte) *Handler { return &Handler{db: db, secret: secret} }
+func NewHandler(db *sql.DB, secret []byte) *Handler {
+	return &Handler{db: db, secret: secret, oauth: oauthSettingsFromEnv()}
+}
 
 type credentials struct {
 	Email    string `json:"email"`
@@ -30,8 +33,11 @@ type credentials struct {
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	allowedMethod := r.Method == http.MethodPost
-	if r.URL.Path == "/users/autocomplete" || r.URL.Path == "/users/directory" || r.URL.Path == "/auth/session" || strings.HasPrefix(r.URL.Path, "/internal/users/") {
+	if r.URL.Path == "/users/autocomplete" || r.URL.Path == "/users/directory" || r.URL.Path == "/auth/session" || strings.HasPrefix(r.URL.Path, "/internal/users/") || strings.HasPrefix(r.URL.Path, "/auth/oauth/") {
 		allowedMethod = r.Method == http.MethodGet
+		if strings.HasSuffix(r.URL.Path, "/link") {
+			allowedMethod = r.Method == http.MethodPost
+		}
 	} else if r.URL.Path == "/users" {
 		allowedMethod = r.Method == http.MethodGet || r.Method == http.MethodPost
 	} else if r.URL.Path == "/users/names" {
@@ -48,6 +54,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.register(w, r)
 	case "/auth/login":
 		h.login(w, r)
+	case "/auth/oauth/github", "/auth/oauth/google":
+		h.startOAuth(w, r, strings.TrimPrefix(r.URL.Path, "/auth/oauth/"), 0)
+	case "/auth/oauth/github/callback", "/auth/oauth/google/callback":
+		h.finishOAuth(w, r, strings.Split(r.URL.Path, "/")[3])
+	case "/auth/oauth/github/link", "/auth/oauth/google/link":
+		uid, err := strconv.ParseUint(r.Header.Get("X-User-ID"), 10, 64)
+		if err != nil || uid == 0 {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		h.startOAuth(w, r, strings.Split(r.URL.Path, "/")[3], uid)
 	case "/users/autocomplete":
 		h.autocompleteUsers(w, r)
 	case "/users/directory":
