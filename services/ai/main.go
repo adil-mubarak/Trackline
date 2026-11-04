@@ -20,6 +20,7 @@ import (
 
 	"github.com/adil/bug-issue-tracker/pkg/health"
 	"github.com/adil/bug-issue-tracker/pkg/logging"
+	"github.com/adil/bug-issue-tracker/pkg/mysqltls"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -34,7 +35,7 @@ func main() {
 		slog.Error("AI_DATABASE_URL must be set")
 		os.Exit(1)
 	}
-	db, err := sql.Open("mysql", dsn)
+	db, err := openAIDatabase(dsn)
 	if err != nil {
 		slog.Error("open AI database", "error", err)
 		os.Exit(1)
@@ -99,6 +100,17 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+func openAIDatabase(dsn string) (*sql.DB, error) {
+	if err := mysqltls.RegisterFromEnv(); err != nil {
+		return nil, fmt.Errorf("configure database TLS: %w", err)
+	}
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open AI database: %w", err)
+	}
+	return db, nil
 }
 
 type chatInput struct {
