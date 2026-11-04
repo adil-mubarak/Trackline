@@ -38,12 +38,15 @@ paths:
   /issues/analytics:
     get:
       summary: Get current issue counts for a project
+      description: include_assignees=true additionally returns counts of issues marked done grouped by assignee ID plus an unassigned count. Requires project membership.
       parameters:
         - { name: project_id, in: query, required: true, schema: { type: integer, format: int64 } }
+        - { name: include_assignees, in: query, required: false, schema: { type: boolean, default: false } }
       responses:
-        '200': { description: Total counts by status and priority plus open high/critical count }
+        '200': { description: Total counts by status and priority plus open high/critical count; optionally per-assignee done counts }
         '400': { description: Invalid or missing project_id }
         '403': { description: User is not a project member }
+        '413': { description: Too many assignees to return in one response }
   /projects/{projectId}/issues/{issueId}/move:
     parameters:
       - { name: projectId, in: path, required: true, schema: { type: integer } }

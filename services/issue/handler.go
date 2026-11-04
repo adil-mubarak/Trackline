@@ -881,11 +881,18 @@ func parseCalendarDate(value string) (time.Time, error) {
 }
 
 type projectAnalytics struct {
-	ProjectID  uint64            `json:"project_id"`
-	Total      uint64            `json:"total"`
-	ByStatus   map[string]uint64 `json:"by_status"`
-	ByPriority map[string]uint64 `json:"by_priority"`
-	OpenHigh   uint64            `json:"open_high_priority"`
+	ProjectID      uint64              `json:"project_id"`
+	Total          uint64              `json:"total"`
+	ByStatus       map[string]uint64   `json:"by_status"`
+	ByPriority     map[string]uint64   `json:"by_priority"`
+	OpenHigh       uint64              `json:"open_high_priority"`
+	DoneByAssignee []assigneeDoneCount `json:"done_by_assignee,omitempty"`
+	DoneUnassigned uint64              `json:"done_unassigned,omitempty"`
+}
+
+type assigneeDoneCount struct {
+	AssigneeID uint64 `json:"assignee_id"`
+	Count      uint64 `json:"count"`
 }
 
 func (h *issueHandler) analytics(w http.ResponseWriter, r *http.Request, uid uint64) {
@@ -902,6 +909,14 @@ func (h *issueHandler) analytics(w http.ResponseWriter, r *http.Request, uid uin
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	includeAssignees := false
+	if raw := r.URL.Query().Get("include_assignees"); raw != "" {
+		includeAssignees, err = strconv.ParseBool(raw)
+		if err != nil {
+			http.Error(w, "include_assignees must be true or false", http.StatusBadRequest)
+			return
+		}
+	}
 	out := projectAnalytics{
 		ProjectID:  projectID,
 		ByStatus:   map[string]uint64{"todo": 0, "in_progress": 0, "done": 0},
@@ -916,6 +931,39 @@ func (h *issueHandler) analytics(w http.ResponseWriter, r *http.Request, uid uin
 	out.ByStatus["todo"], out.ByStatus["in_progress"], out.ByStatus["done"] = todo, inProgress, done
 	out.ByPriority["critical"], out.ByPriority["high"], out.ByPriority["medium"], out.ByPriority["low"] = critical, high, medium, low
 	out.OpenHigh = openHigh
+	if includeAssignees {
+		rows, err := h.db.QueryContext(r.Context(), "SELECT assignee_id, COUNT(*) FROM issues WHERE project_id=? AND status='done' GROUP BY assignee_id ORDER BY assignee_id LIMIT 502", projectID)
+		if err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var assigneeID sql.NullInt64
+			var count uint64
+			if err := rows.Scan(&assigneeID, &count); err != nil {
+				http.Error(w, "database error", http.StatusInternalServerError)
+				return
+			}
+			if !assigneeID.Valid {
+				out.DoneUnassigned = count
+				continue
+			}
+			if assigneeID.Int64 <= 0 {
+				http.Error(w, "invalid assignee data", http.StatusInternalServerError)
+				return
+			}
+			out.DoneByAssignee = append(out.DoneByAssignee, assigneeDoneCount{AssigneeID: uint64(assigneeID.Int64), Count: count})
+		}
+		if err := rows.Err(); err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+		if len(out.DoneByAssignee) > 500 {
+			http.Error(w, "too many assignees to summarize", http.StatusRequestEntityTooLarge)
+			return
+		}
+	}
 	writeIssue(w, http.StatusOK, out)
 }
 

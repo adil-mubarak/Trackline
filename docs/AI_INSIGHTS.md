@@ -63,6 +63,7 @@ tools; initially, all tools are read-only and narrowly scoped:
 |---|---|---|---|
 | `project_issue_summary` | project ID, optional status/assignee, date window | Issue API | Current issue counts and matching issue identifiers |
 | `recent_project_activity` | project ID, time window, page size/cursor | Activity API | Recorded changes and activity evidence |
+| `cross_project_done_task_summary` | authenticated caller | Project API + per-project Issue analytics API | Deterministic, unranked counts of issues currently marked done by assignee across projects the caller can access |
 | `project_schedule_summary` | project ID, bounded date range | Project/Issue APIs as available | Due dates, milestones, and schedule context |
 | `issue_details` | project ID and issue ID | Issue API | Verify a cited issue's current fields |
 | `linked_pr_evidence` | project ID, issue ID | Issue API + GitHub API | Retrieve explicitly linked PR state, checks, and review evidence |
@@ -164,6 +165,12 @@ must not be presented as productivity or quality scores.
   requested time window. Do not turn missing data into a negative finding.
 - Do not create a “top employee” ranking in the MVP. Counts can be distorted by
   task size, role, assignment practices, and incomplete event capture.
+- The cross-project done-task summary reports counts alphabetically by username,
+  not by count. It says “issues marked done,” separates unassigned issues, and
+  does not identify a “top” user or characterize the counts as performance.
+  Project scope is the set returned by the caller-authorized Project API; the
+  Issue service returns per-project assignee aggregates only after its own
+  membership check. If any project cannot be read, do not present partial totals.
 - Do not use GitHub commits, PR counts, merges, reviews, or check results to
   rank or label individuals as the “best” or “most accurate.” These are
   incomplete, role-dependent proxies; authorship does not prove responsibility,

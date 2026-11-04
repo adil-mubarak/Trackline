@@ -120,6 +120,140 @@ func TestCodeReviewRequestRequiresPRContextAndCodeIntent(t *testing.T) {
 	}
 }
 
+func TestDoneTaskSummaryRequestDetection(t *testing.T) {
+	if !requestsDoneTaskSummary("Which user has more tasks done overall in every project?") {
+		t.Fatal("expected cross-project done-task summary request to be recognized")
+	}
+	if requestsDoneTaskSummary("How many tasks are done in this project?") {
+		t.Fatal("single-project task summary should not enter cross-project aggregation")
+	}
+	if requestsDoneTaskSummary("Which user has more open tasks across projects?") {
+		t.Fatal("open task request should not enter done-task aggregation")
+	}
+}
+
+func TestDoneTaskSummaryUsesAuthorizedProjectsAndReturnsUnrankedCounts(t *testing.T) {
+	var providerCalls int
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerCalls++
+		t.Error("deterministic tracker aggregation must not call OpenRouter")
+	}))
+	defer provider.Close()
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer caller-token" {
+			t.Errorf("gateway request lost caller authorization: %q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/projects":
+			fmt.Fprint(w, `[{"id":8,"name":"Beta Project"},{"id":9,"name":"Alpha Project"}]`)
+		case "/issues/analytics":
+			if r.URL.Query().Get("include_assignees") != "true" {
+				t.Errorf("assignee analytics not requested: %s", r.URL.RawQuery)
+			}
+			if r.URL.Query().Get("project_id") == "8" {
+				fmt.Fprint(w, `{"project_id":8,"by_status":{"done":5},"done_by_assignee":[{"assignee_id":11,"count":4},{"assignee_id":24,"count":1}],"done_unassigned":2}`)
+			} else {
+				fmt.Fprint(w, `{"project_id":9,"by_status":{"done":2},"done_by_assignee":[{"assignee_id":11,"count":1},{"assignee_id":24,"count":1}]}`)
+			}
+		case "/users/names":
+			fmt.Fprint(w, `[{"id":11,"username":"zoe"},{"id":24,"username":"alex"}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gateway.Close()
+	handler := newAIHandlerWithGateway("provider-key", provider.URL, "test-model", gateway.URL, gateway.Client())
+	request := httptest.NewRequest(http.MethodPost, "/ai/chat", strings.NewReader(`{"message":"Which user has more tasks that are done overall in every project?"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer caller-token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result chatResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if providerCalls != 0 || !strings.Contains(result.Reply, "**Issues marked done across your 2 accessible projects**") || !strings.Contains(result.Reply, "| alex | 2 |") || !strings.Contains(result.Reply, "| zoe | 5 |") || !strings.Contains(result.Reply, "Unassigned issues marked done: 2") || !strings.Contains(result.Reply, "The list is not ranked") {
+		t.Fatalf("unexpected non-ranked task summary: providerCalls=%d reply=%s", providerCalls, result.Reply)
+	}
+	if strings.Index(result.Reply, "| alex |") > strings.Index(result.Reply, "| zoe |") {
+		t.Fatalf("summary should sort names, not counts: %s", result.Reply)
+	}
+}
+
+func TestDoneTaskSummaryFailsClosedWhenAnyProjectCannotBeRead(t *testing.T) {
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/projects":
+			fmt.Fprint(w, `[{"id":8,"name":"Visible"},{"id":9,"name":"Restricted"}]`)
+		case "/issues/analytics":
+			if r.URL.Query().Get("project_id") == "9" {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			fmt.Fprint(w, `{"project_id":8,"by_status":{"done":1},"done_by_assignee":[{"assignee_id":11,"count":1}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gateway.Close()
+	_, err := summarizeDoneTasksAcrossProjects(context.Background(), gateway.URL, "caller-token", "request", gateway.Client())
+	if err == nil {
+		t.Fatal("expected incomplete project access to fail the summary rather than return partial totals")
+	}
+}
+
+func TestDoneTaskSummaryResolvesNamesInAuthBatches(t *testing.T) {
+	nameCalls := 0
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/projects":
+			fmt.Fprint(w, `[{"id":8,"name":"One"}]`)
+		case "/issues/analytics":
+			var items []struct {
+				AssigneeID uint64 `json:"assignee_id"`
+				Count      uint64 `json:"count"`
+			}
+			for id := uint64(1); id <= 101; id++ {
+				items = append(items, struct {
+					AssigneeID uint64 `json:"assignee_id"`
+					Count      uint64 `json:"count"`
+				}{AssigneeID: id, Count: 1})
+			}
+			body, _ := json.Marshal(map[string]any{"project_id": 8, "by_status": map[string]uint64{"done": 101}, "done_by_assignee": items})
+			_, _ = w.Write(body)
+		case "/users/names":
+			nameCalls++
+			var input struct {
+				UserIDs []uint64 `json:"user_ids"`
+			}
+			if json.NewDecoder(r.Body).Decode(&input) != nil || len(input.UserIDs) == 0 || len(input.UserIDs) > 100 {
+				t.Errorf("invalid bounded Auth name lookup batch: %+v", input.UserIDs)
+			}
+			names := make([]map[string]any, 0, len(input.UserIDs))
+			for _, id := range input.UserIDs {
+				names = append(names, map[string]any{"id": id, "username": fmt.Sprintf("user-%03d", id)})
+			}
+			_ = json.NewEncoder(w).Encode(names)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gateway.Close()
+	result, err := summarizeDoneTasksAcrossProjects(context.Background(), gateway.URL, "caller-token", "request", gateway.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nameCalls != 2 || !strings.Contains(result, "Issues marked done | Contributing projects") || !strings.Contains(result, "| user-101 | 1 | One (1) |") {
+		t.Fatalf("expected two bounded name batches and all users in result; calls=%d", nameCalls)
+	}
+}
+
 func TestExplicitLinkedPRCodeReviewPrefetchesWithoutModelToolCalls(t *testing.T) {
 	app, githubServer := testGitHubApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

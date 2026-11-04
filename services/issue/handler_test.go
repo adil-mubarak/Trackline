@@ -633,6 +633,51 @@ func TestProjectAnalyticsReturnsCurrentIssueCounts(t *testing.T) {
 	}
 }
 
+func TestProjectAnalyticsCanReturnDoneCountsByAssignee(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	h, closeServer := newIssueTestHandler(t, db, true)
+	defer closeServer()
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\).*FROM issues WHERE project_id=\\?").WithArgs(uint64(4)).WillReturnRows(sqlmock.NewRows([]string{"total", "todo", "in_progress", "done", "critical", "high", "medium", "low", "open_high"}).AddRow(8, 2, 3, 3, 1, 2, 4, 1, 2))
+	mock.ExpectQuery("SELECT assignee_id, COUNT\\(\\*\\) FROM issues WHERE project_id=\\? AND status='done' GROUP BY assignee_id").WithArgs(uint64(4)).WillReturnRows(sqlmock.NewRows([]string{"assignee_id", "count"}).AddRow(11, 2).AddRow(24, 1).AddRow(nil, 3))
+	w := sendIssueRequest(h, http.MethodGet, "/issues/analytics?project_id=4&include_assignees=true", "")
+	for _, expected := range []string{`"done_by_assignee":[{"assignee_id":11,"count":2},{"assignee_id":24,"count":1}]`, `"done_unassigned":3`} {
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), expected) {
+			t.Fatalf("analytics status=%d missing %s body=%s", w.Code, expected, w.Body.String())
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProjectAnalyticsRejectsMoreThan500AssignedUsersEvenWithUnassignedGroup(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	h, closeServer := newIssueTestHandler(t, db, true)
+	defer closeServer()
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\).*FROM issues WHERE project_id=\\?").WithArgs(uint64(4)).WillReturnRows(sqlmock.NewRows([]string{"total", "todo", "in_progress", "done", "critical", "high", "medium", "low", "open_high"}).AddRow(600, 0, 0, 600, 0, 0, 0, 0, 0))
+	rows := sqlmock.NewRows([]string{"assignee_id", "count"})
+	for id := 1; id <= 501; id++ {
+		rows.AddRow(id, 1)
+	}
+	rows.AddRow(nil, 99)
+	mock.ExpectQuery("SELECT assignee_id, COUNT\\(\\*\\) FROM issues WHERE project_id=\\? AND status='done' GROUP BY assignee_id").WithArgs(uint64(4)).WillReturnRows(rows)
+	w := sendIssueRequest(h, http.MethodGet, "/issues/analytics?project_id=4&include_assignees=true", "")
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("analytics should fail closed on excessive assignees; status=%d body=%s", w.Code, w.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProjectAnalyticsRequiresMembershipAndProjectID(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

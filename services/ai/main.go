@@ -165,6 +165,15 @@ func newAIHandlerWithIntegrations(apiKey, baseURL, model, gatewayURL string, cli
 		}
 		bearerToken := bearerToken(r.Header.Get("Authorization"))
 		requestID := r.Header.Get("X-Request-ID")
+		if requestsDoneTaskSummary(input.Message) {
+			summary, err := summarizeDoneTasksAcrossProjects(r.Context(), gatewayURL, bearerToken, requestID, client)
+			if err != nil {
+				writeJSON(w, http.StatusOK, chatResult{Reply: "I couldn't retrieve a complete done-task count across your accessible projects. Please try again later; no partial totals are shown.", Model: "tracker-data-summary"})
+				return
+			}
+			writeJSON(w, http.StatusOK, chatResult{Reply: summary, Model: "tracker-data-summary"})
+			return
+		}
 		codeReviewMode := requestsLinkedPRCodeReview(input.Message)
 		if codeReviewMode {
 			issueID, unambiguous := explicitIssueID(input.Message)
