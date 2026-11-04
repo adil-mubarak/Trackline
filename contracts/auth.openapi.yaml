@@ -181,6 +181,33 @@ paths:
                   role: { type: string, enum: [admin, member] }
                   must_change_password: { type: boolean }
         '401': { description: Invalid credentials }
+  /auth/oauth/{provider}:
+    get:
+      summary: Begin GitHub or Google OAuth sign-in
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string, enum: [github, google] } }
+      responses:
+        '302': { description: Redirect to the selected provider; signed state is bound to an HttpOnly short-lived cookie }
+        '503': { description: Provider OAuth credentials are not configured }
+  /auth/oauth/{provider}/callback:
+    get:
+      summary: OAuth provider callback
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string, enum: [github, google] } }
+        - { name: code, in: query, required: true, schema: { type: string } }
+        - { name: state, in: query, required: true, schema: { type: string } }
+      responses:
+        '302': { description: Redirect to configured frontend with token in URL fragment; existing matching emails require explicit account linking }
+  /auth/oauth/{provider}/link:
+    post:
+      summary: Begin explicit OAuth account linking for the authenticated user
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string, enum: [github, google] } }
+      responses:
+        '200': { description: Authorization URL for a link flow; identity is not linked until provider callback succeeds }
+        '401': { description: Authentication required }
+        '409': { description: Provider identity is already linked to another account }
 components:
   schemas:
     Credentials:

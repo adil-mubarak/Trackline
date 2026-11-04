@@ -8,7 +8,7 @@ MIGRATE_STEPS ?= 1
 MIGRATE_TARGET_DB = $(if $(filter all,$(MIGRATE_DATABASE)),auth_db,$(MIGRATE_DATABASE))
 
 DC = $(COMPOSE) -f $(COMPOSE_FILE)
-DATABASES = auth_db project_db issue_db activity_db
+DATABASES = auth_db project_db issue_db activity_db ai_db
 
 .PHONY: help run-trackline run-bug-issue-tracker run-frontend run-backend run-auth run-project run-issue run-activity run-ai run-gateway docker-up docker-app-up docker-status docker-down migrate-up migrate-down migrate-status fmt vet test lint build
 
@@ -39,13 +39,13 @@ run-activity:
 	@set -a; . ./.env; set +a; ACTIVITY_ADDR=:8086 ACTIVITY_DATABASE_URL="root:$${MYSQL_ROOT_PASSWORD}@tcp(127.0.0.1:$${MYSQL_PORT:-3306})/activity_db?parseTime=true" PROJECT_SERVICE_URL=http://127.0.0.1:8084 NATS_URL="nats://127.0.0.1:$${NATS_PORT:-4222}" go run ./services/activity
 
 run-ai:
-	@set -a; . ./.env; set +a; AI_ADDR=127.0.0.1:8087 GATEWAY_INTERNAL_URL=http://127.0.0.1:8082 go run ./services/ai
+	@set -a; . ./.env; set +a; AI_ADDR=127.0.0.1:8087 AI_DATABASE_URL="root:$${MYSQL_ROOT_PASSWORD}@tcp(127.0.0.1:$${MYSQL_PORT:-3306})/ai_db?parseTime=true" GATEWAY_INTERNAL_URL=http://127.0.0.1:8082 go run ./services/ai
 
 run-gateway:
 	@set -a; . ./.env; set +a; GATEWAY_ADDR=:8082 AUTH_SERVICE_URL=http://127.0.0.1:8083 PROJECT_SERVICE_URL=http://127.0.0.1:8084 ISSUE_SERVICE_URL=http://127.0.0.1:8085 ACTIVITY_SERVICE_URL=http://127.0.0.1:8086 AI_SERVICE_URL=http://127.0.0.1:8087 go run ./gateway
 
 docker-up: ## Start only MySQL and NATS, then apply migrations
-	$(DC) --profile app stop auth project issue activity gateway frontend
+	$(DC) --profile app stop auth project issue activity ai gateway frontend
 	$(DC) up -d mysql nats
 	$(MAKE) migrate-up MIGRATE_DATABASE=$(MIGRATE_DATABASE)
 

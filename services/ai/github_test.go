@@ -304,11 +304,12 @@ func TestLinkedPREvidenceRequiresExplicitMatchingLinksAndBounds(t *testing.T) {
 func TestLinkedPREvidenceRejectsUnlinkedOrMismatchedPRAndMissingGitHubConfig(t *testing.T) {
 	for i, links := range []string{`[]`, `[{"repository_id":77,"number":7}]`, `[{"repository_id":42,"number":7},{"repository_id":42,"number":8},{"repository_id":42,"number":9},{"repository_id":42,"number":10},{"repository_id":42,"number":11},{"repository_id":42,"number":12}]`} {
 		gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/issues/8" {
+			switch r.URL.Path {
+			case "/issues/8":
 				fmt.Fprint(w, `{"id":8,"project_id":9}`)
-			} else if r.URL.Path == "/issues/8/pull-requests" {
+			case "/issues/8/pull-requests":
 				fmt.Fprint(w, links)
-			} else {
+			default:
 				fmt.Fprint(w, `{"id":42,"owner":"acme","name":"tracker"}`)
 			}
 		}))

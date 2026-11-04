@@ -44,6 +44,7 @@ flowchart LR
     GW --> ACTIVITY[Activity API]
     AI -->|prompt + minimized evidence| OR[OpenRouter API]
     AI -->|scoped read-only evidence| GH[GitHub API / GitHub App]
+    AI -->|user-owned transcripts, 90-day TTL| AIDB[(ai_db)]
 ```
 
 The MCP adapter is a **proposed new deployable** and a deliberate exception to
@@ -200,9 +201,15 @@ must not be presented as productivity or quality scores.
   credentials, password/reset data, and unrelated personal data. Keep production
   model calls disabled until OpenRouter data handling, access controls, logging,
   and data retention are reviewed and approved.
-- Do not persist chat transcripts by default. If persistence is later needed,
-  define retention/deletion, access policy, encryption, and an owning datastore
-  before adding it.
+- Chat transcripts are stored in the AI service's `ai_db`, owned and scoped by
+  authenticated user ID; no other service queries this database. Successful
+  user prompts and assistant replies are retained for 90 days, with an explicit
+  per-chat delete operation and hourly expiry purge. Provider tokens and tracker
+  credentials are never stored in transcript rows. Saved answers may contain
+  project facts that the user later loses access to; histories remain visible
+  only to their owner until manually deleted or expired, so deployments must
+  protect `ai_db` backups and storage. Previous turns are displayed as history
+  but are not automatically sent to OpenRouter as conversation context.
 - Apply authentication, per-user/project rate limits, request and token limits,
   timeouts, audit metadata (actor, tool, project, time, outcome), and safe error
   handling. Never log prompts or sensitive source text by default.
@@ -219,13 +226,15 @@ and client from the official Go SDK inside the AI service. The model's OpenRoute
 tool calls are translated to MCP `CallTool` requests; MCP handlers use only
 caller-authenticated Gateway APIs. This avoids adding a separately reachable
 MCP service and keeps caller credentials scoped to the AI-to-Gateway requests.
-The authenticated frontend now has an AI Copilot panel on the workspace (plus a
-full-page entry) that posts to `/ai/chat`, shows loading and error states, and
-warns users to verify results. The panel follows the Stitch board reference but
-does not offer write/apply-suggestion actions. Each submission is independent:
-prior turns are displayed locally but are not sent as context, and chats are not
-persisted. GitHub tools and the unresolved external-provider approval are not
-included in this implementation pass.
+The authenticated frontend has an AI Copilot panel on the workspace plus a
+full-page entry. It stores successful turns in AI-owned `ai_db`; the history
+sidebar lists, loads, and deletes owner-scoped conversations. Expired records
+are purged after 90 days. Individual questions remain independent and are not
+sent with prior turns as model context. The UI warns users to verify results and
+does not offer write/apply-suggestion actions. Chart responses use typed,
+deterministic current issue-count aggregates; user charts are alphabetical and
+unranked, explicitly not employee performance scores. Activity actor IDs are
+resolved through Auth API names before activity evidence is sent to the model.
 
 1. **Discovery and approval:** verify the organization integration guide;
    confirm user roles/scopes, approved GitHub repositories and permissions,
@@ -270,8 +279,8 @@ included in this implementation pass.
   rather than inventing facts. Include prompt-injection text in issue content.
 - Frontend tests for loading, error, empty, citation navigation, and accessible
   chat controls.
-- Verify no arbitrary SQL, writes, secrets in logs, transcript retention by
-  default, or cross-service database access.
+- Verify no arbitrary SQL, writes, secrets in logs, transcript owner isolation,
+  90-day retention/deletion, or cross-service database access.
 - Rate-limit and resource-usage tests, monitoring for tool errors/latency and
   provider cost, and an operational kill switch for model calls.
 - Confirm provider data handling and the organization guide's integration

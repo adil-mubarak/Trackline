@@ -1,14 +1,17 @@
 # Architecture
 
-The application is a Go monorepo with a gateway and four independently owned
-data services. An AI service provides authenticated chat and calls OpenRouter;
-it owns no tracker database. Auth, Project, Issue, and Activity each use a separate MySQL database
+The application is a Go monorepo with a gateway and independently owned
+services. An AI service provides authenticated chat and calls OpenRouter; it
+owns its transcript database (`ai_db`) and does not query tracker databases.
+Auth, Project, Issue, and Activity each use a separate MySQL database
 (`auth_db`, `project_db`, `issue_db`, and `activity_db`). The Compose setup
 starts the MySQL and NATS dependencies, applies migrations, and starts all
 services plus the static React frontend.
 
 Services communicate through APIs rather than querying another service's
-tables. The Issue service calls Project for membership checks and caches the
+tables. The AI service stores successful chat turns scoped to authenticated
+user IDs, supports owner-checked deletion, and purges transcripts after 90 days.
+The Issue service calls Project for membership checks and caches the
 result briefly in a bounded LRU. Issue-created and status-changed events are
 published to NATS for Activity to consume. The gateway is the frontend's single
 API entry point: it validates HS256 JWTs and forwards the authenticated user ID

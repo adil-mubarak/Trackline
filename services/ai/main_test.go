@@ -130,6 +130,69 @@ func TestDoneTaskSummaryRequestDetection(t *testing.T) {
 	if requestsDoneTaskSummary("Which user has more open tasks across projects?") {
 		t.Fatal("open task request should not enter done-task aggregation")
 	}
+	if !requestsIssueCountChart("Draw an unranked graph of project and user completed issues") {
+		t.Fatal("expected factual issue-count graph request to be recognized")
+	}
+	if requestsIssueCountChart("Show a graph of employee productivity") {
+		t.Fatal("must not fabricate a productivity chart without issue-count data")
+	}
+	if requestsIssueCountChart("Show a graph of total issues by project") {
+		t.Fatal("must not silently substitute done counts for an unspecified total issue metric")
+	}
+}
+
+func TestDoneTaskChartsContainOnlyAlphabeticalFactualCounts(t *testing.T) {
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/projects":
+			fmt.Fprint(w, `[{"id":8,"name":"Beta"},{"id":9,"name":"Alpha"}]`)
+		case "/issues/analytics":
+			if r.URL.Query().Get("project_id") == "8" {
+				fmt.Fprint(w, `{"project_id":8,"by_status":{"done":3},"done_by_assignee":[{"assignee_id":7,"count":3}]}`)
+			} else {
+				fmt.Fprint(w, `{"project_id":9,"by_status":{"done":1},"done_by_assignee":[{"assignee_id":8,"count":1}]}`)
+			}
+		case "/users/names":
+			fmt.Fprint(w, `[{"id":7,"username":"zoe"},{"id":8,"username":"alex"}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gateway.Close()
+	result, err := summarizeDoneTasksAcrossProjectsWithCharts(context.Background(), gateway.URL, "caller-token", "request", gateway.Client(), "Draw a graph of done issue counts by project and user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Charts) != 2 || result.Charts[0].Data[0].Label != "Alpha" || result.Charts[1].Data[0].Label != "alex" || result.Charts[1].Data[1].Label != "zoe" {
+		t.Fatalf("charts should contain project/user counts in alphabetical order: %+v", result.Charts)
+	}
+	if strings.Contains(result.Reply, "User 7") || strings.Contains(result.Reply, "assignee_id") || !strings.Contains(result.Charts[1].Note, "not ranked") || !strings.Contains(result.Charts[1].Note, "not employee performance") {
+		t.Fatalf("raw user identifiers or performance ranking language leaked: %+v", result)
+	}
+}
+
+func TestRecentProjectActivityResolvesActorNamesWithoutReturningIDs(t *testing.T) {
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/activity":
+			fmt.Fprint(w, `[{"id":5,"project_id":3,"issue_id":12,"actor_id":942,"event_type":"IssueCreated","payload":{},"occurred_at":"2026-11-04T08:00:00Z"},{"id":6,"project_id":3,"issue_id":13,"actor_id":943,"event_type":"IssueUpdated","payload":{},"occurred_at":"2026-11-04T08:01:00Z"}]`)
+		case "/users/names":
+			fmt.Fprint(w, `[{"id":942,"username":"alex"}]`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer gateway.Close()
+	data, err := recentProjectActivity(context.Background(), gateway.URL, "caller-token", "request", "/activity?project_id=3&limit=2", gateway.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, "actor_id") || strings.Contains(text, "942") || strings.Contains(text, "943") || !strings.Contains(text, `"actor_name":"alex"`) || !strings.Contains(text, `"actor_name":"Unknown user"`) {
+		t.Fatalf("activity actors must be names, not IDs: %s", text)
+	}
 }
 
 func TestDoneTaskSummaryUsesAuthorizedProjectsAndReturnsUnrankedCounts(t *testing.T) {

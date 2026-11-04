@@ -92,11 +92,12 @@ func newTrackerMCP(ctx context.Context, gatewayURL, bearer, requestID string, cl
 		server.AddTool(tool, func(callCtx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 			var data json.RawMessage
 			var err error
-			if request.Params.Name == "linked_pr_evidence" {
+			switch request.Params.Name {
+			case "linked_pr_evidence":
 				data, err = linkedPREvidence(callCtx, gatewayURL, bearer, requestID, request.Params.Arguments, client, app)
-			} else if request.Params.Name == "linked_pr_code_changes" {
+			case "linked_pr_code_changes":
 				data, err = linkedPRCodeChanges(callCtx, gatewayURL, bearer, requestID, request.Params.Arguments, client, codeApp)
-			} else {
+			default:
 				data, err = executeTrackerTool(callCtx, gatewayURL, bearer, requestID, request.Params.Name, request.Params.Arguments, client)
 			}
 			if err != nil {
@@ -445,6 +446,7 @@ func executeTrackerTool(ctx context.Context, gatewayURL, bearerToken, requestID,
 		query.Set("project_id", strconv.FormatUint(args.ProjectID, 10))
 		query.Set("limit", strconv.Itoa(args.Limit))
 		path = "/activity?" + query.Encode()
+		return recentProjectActivity(ctx, gatewayURL, bearerToken, requestID, path, client)
 	case "list_project_members":
 		var args struct {
 			ProjectID uint64 `json:"project_id"`
@@ -457,6 +459,84 @@ func executeTrackerTool(ctx context.Context, gatewayURL, bearerToken, requestID,
 		return nil, errors.New("unknown read-only tracker tool")
 	}
 	return callGatewayJSON(ctx, client, gatewayURL, bearerToken, requestID, http.MethodGet, path, nil)
+}
+
+func recentProjectActivity(ctx context.Context, gatewayURL, bearerToken, requestID, path string, client *http.Client) (json.RawMessage, error) {
+	data, err := callGatewayJSON(ctx, client, gatewayURL, bearerToken, requestID, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+	var events []struct {
+		ID         uint64          `json:"id"`
+		ProjectID  uint64          `json:"project_id"`
+		IssueID    uint64          `json:"issue_id"`
+		ActorID    uint64          `json:"actor_id"`
+		EventType  string          `json:"event_type"`
+		Payload    json.RawMessage `json:"payload"`
+		OccurredAt string          `json:"occurred_at"`
+	}
+	if err := json.Unmarshal(data, &events); err != nil {
+		return nil, errors.New("invalid recent activity response")
+	}
+	idSet := make(map[uint64]struct{}, len(events))
+	ids := make([]uint64, 0, len(events))
+	for _, event := range events {
+		if event.ActorID == 0 {
+			continue
+		}
+		if _, exists := idSet[event.ActorID]; !exists {
+			idSet[event.ActorID] = struct{}{}
+			ids = append(ids, event.ActorID)
+		}
+	}
+	nameByID := make(map[uint64]string, len(ids))
+	for start := 0; start < len(ids); start += 100 {
+		end := min(start+100, len(ids))
+		body, err := json.Marshal(struct {
+			UserIDs []uint64 `json:"user_ids"`
+		}{UserIDs: ids[start:end]})
+		if err != nil {
+			return nil, fmt.Errorf("encode activity actor lookup: %w", err)
+		}
+		data, err := callGatewayJSON(ctx, client, gatewayURL, bearerToken, requestID, http.MethodPost, "/users/names", body)
+		if err != nil {
+			return nil, fmt.Errorf("resolve activity actor names: %w", err)
+		}
+		var names []struct {
+			ID       uint64 `json:"id"`
+			Username string `json:"username"`
+		}
+		if err := json.Unmarshal(data, &names); err != nil {
+			return nil, errors.New("invalid activity actor names response")
+		}
+		for _, name := range names {
+			if name.Username = strings.TrimSpace(name.Username); name.Username != "" {
+				nameByID[name.ID] = name.Username
+			}
+		}
+	}
+	type activityEvidence struct {
+		ID         uint64          `json:"id"`
+		ProjectID  uint64          `json:"project_id"`
+		IssueID    uint64          `json:"issue_id"`
+		ActorName  string          `json:"actor_name"`
+		EventType  string          `json:"event_type"`
+		Payload    json.RawMessage `json:"payload"`
+		OccurredAt string          `json:"occurred_at"`
+	}
+	result := make([]activityEvidence, 0, len(events))
+	for _, event := range events {
+		actorName := nameByID[event.ActorID]
+		if actorName == "" {
+			actorName = "Unknown user"
+		}
+		result = append(result, activityEvidence{ID: event.ID, ProjectID: event.ProjectID, IssueID: event.IssueID, ActorName: actorName, EventType: event.EventType, Payload: event.Payload, OccurredAt: event.OccurredAt})
+	}
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("encode recent activity: %w", err)
+	}
+	return encoded, nil
 }
 
 func listProjectMembers(ctx context.Context, gatewayURL, bearerToken, requestID string, projectID uint64, client *http.Client) (json.RawMessage, error) {
@@ -507,16 +587,18 @@ func listProjectMembers(ctx context.Context, gatewayURL, bearerToken, requestID 
 		nameByID[item.ID] = item.Username
 	}
 	type memberResult struct {
-		UserID    uint64 `json:"user_id"`
 		Username  string `json:"username,omitempty"`
 		Role      string `json:"role"`
 		Synthetic bool   `json:"synthetic,omitempty"`
 	}
 	result := make([]memberResult, 0, len(members))
 	for _, member := range members {
+		username := nameByID[member.UserID]
+		if username == "" {
+			username = "Unknown user"
+		}
 		result = append(result, memberResult{
-			UserID:    member.UserID,
-			Username:  nameByID[member.UserID],
+			Username:  username,
 			Role:      member.Role,
 			Synthetic: member.Synthetic,
 		})

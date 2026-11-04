@@ -16,7 +16,7 @@ import {
 } from '@dnd-kit/core'
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import ChatPage from './ChatPage'
+import ChatPage, { AIChatResult, AIConversationSummary, AIStoredMessage } from './ChatPage'
 
 export type Project = { id: number; name: string; description: string; owner_id?: number; owner_username?: string }
 export type GitHubRepository = { id: number; owner: string; name: string }
@@ -97,7 +97,10 @@ export type ProjectBoardProps = {
   onShowActivity: () => void
   onShowAnalytics: () => void
   onShowChat: () => void
-  onAskTrackerAssistant: (message: string) => Promise<string>
+  onAskTrackerAssistant: (message: string, conversationID?: number) => Promise<string | AIChatResult>
+  onLoadAIConversations?: () => Promise<AIConversationSummary[]>
+  onLoadAIConversationMessages?: (conversationID: number) => Promise<AIStoredMessage[]>
+  onDeleteAIConversation?: (conversationID: number) => Promise<void>
   onShowUsers: () => void
   onLoadMoreUsers: () => void
   onResetUserPassword: (userID: number, temporaryPassword: string) => Promise<void>
@@ -116,6 +119,7 @@ export type ProjectBoardProps = {
   onLoadUserDirectory: (afterID: number | null) => Promise<UserDirectoryPage>
   onAddIssue: (status?: string) => void
   onLogout: () => void
+  onLinkOAuthProvider: (provider: 'github' | 'google') => Promise<void>
   onDismissError: () => void
   onQueryChange: (value: string) => void
   onStatusFilterChange: (value: string) => void
@@ -208,6 +212,7 @@ export function ProjectBoard(props: ProjectBoardProps) {
         onOpenBoard={props.onOpenBoard}
         onAddProject={props.onAddProject}
         onLogout={props.onLogout}
+        onLinkOAuthProvider={props.onLinkOAuthProvider}
       />
       <div className="main-area">
         <TopBar projectName={props.selectedProject?.name} section={screenLabel(props.screen)} query={props.query} onQueryChange={props.onQueryChange} onAddIssue={props.onAddIssue} onOpenCopilot={() => setCopilotOpen(true)} copilotTriggerRef={copilotTriggerRef} canManageRepository={Boolean(props.selectedProject && (props.globalRole === 'admin' || props.projectRole === 'admin'))} onManageRepository={() => setRepoSettingsOpen(true)} onShowProjects={props.onShowProjects} onOpenBoard={props.onOpenBoard} onOpenCurrentSection={() => {
@@ -222,7 +227,7 @@ export function ProjectBoard(props: ProjectBoardProps) {
           else if (props.screen === 'chat') props.onShowChat()
         }} />
         <main className="board-content">
-          {props.screen === 'chat' ? <ChatPage onAsk={props.onAskTrackerAssistant} /> : props.screen === 'board' ? <>
+          {props.screen === 'chat' ? <ChatPage onAsk={props.onAskTrackerAssistant} onLoadConversations={props.onLoadAIConversations} onLoadMessages={props.onLoadAIConversationMessages} onDeleteConversation={props.onDeleteAIConversation} /> : props.screen === 'board' ? <>
           <ProjectHeader
             project={props.selectedProject}
             openCount={openCount}
@@ -279,8 +284,9 @@ export function ProjectBoard(props: ProjectBoardProps) {
           </> : props.screen === 'projects' ? <ProjectsDirectory projects={props.projects} adminProjects={props.adminProjects} adminProjectsLoading={props.adminProjectsLoading} adminProjectsError={props.adminProjectsError} isGlobalAdmin={props.globalRole === 'admin'} selectedProjectId={props.selectedProjectId} currentUserID={props.currentUserID} error={props.error} onDismissError={props.onDismissError} onSelectProject={id => { props.onSelectProject(id); props.onOpenBoard() }} onDeleteProject={project => setPendingDelete({ kind: 'project', project })} onLoadUserDirectory={props.onLoadUserDirectory} onCreateProject={props.onCreateProject} onLoadGitHubRepositories={props.onLoadGitHubRepositories} onGetProjectRepository={props.onGetProjectRepository} onSetProjectRepository={props.onSetProjectRepository} /> : props.screen === 'calendar' ? <ProjectCalendar project={props.selectedProject} issues={props.calendarIssues} loading={props.calendarLoading} onRangeChange={props.onCalendarRangeChange} onOpenIssue={props.onOpenIssue} /> : props.screen === 'admin' ? <ProjectAdminPanel members={props.members} role={props.projectRole} globalRole={props.globalRole} onSearchUsers={props.onSearchUsers} onAddMember={props.onAddMember} onRemoveMember={props.onRemoveMember} onSetMemberRole={props.onSetMemberRole} /> : props.screen === 'users' ? <UserManagementPage users={props.adminUsers} projects={props.adminProjects} loading={props.adminUsersLoading} error={props.adminUsersError} hasMore={props.adminUsersHasMore} managedUserID={props.managedUserID} managedProjectIDs={props.managedUserProjectIDs} managedProjectsLoading={props.managedUserProjectsLoading} managedProjectsError={props.managedUserProjectsError} onLoadMore={props.onLoadMoreUsers} onResetPassword={props.onResetUserPassword} onCreateUser={props.onCreateUser} onSetUserActive={props.onSetUserActive} onManageProjects={props.onManageUserProjects} onToggleProject={props.onToggleUserProject} currentUserID={props.currentUserID} /> : props.screen === 'my-issues' ? <MyIssuesPage issues={props.myIssues} projects={props.projects} loading={props.myIssuesLoading} error={props.myIssuesError} currentUserID={props.currentUserID} onOpenIssue={props.onOpenIssue} /> : props.screen === 'activity' ? <ActivityPage items={props.activityItems} projects={props.projects} loading={props.activityLoading} partialErrors={props.activityPartialErrors} /> : <AnalyticsPage project={props.selectedProject} snapshot={props.analytics} loading={props.analyticsLoading} error={props.analyticsError} />}
         </main>
       </div>
+      {props.screen !== 'chat' && !copilotOpen && <button className="floating-copilot-button" type="button" onClick={() => setCopilotOpen(true)}><span className="material-symbols-outlined" aria-hidden="true">auto_awesome</span>Ask Copilot<kbd>⌘J</kbd></button>}
       {copilotOpen && <aside className="ai-copilot-panel" aria-label="AI Copilot">
-        <ChatPage presentation="panel" onAsk={props.onAskTrackerAssistant} onClose={closeCopilot} />
+        <ChatPage presentation="panel" onAsk={props.onAskTrackerAssistant} onLoadConversations={props.onLoadAIConversations} onLoadMessages={props.onLoadAIConversationMessages} onDeleteConversation={props.onDeleteAIConversation} onClose={closeCopilot} />
       </aside>}
       {repoSettingsOpen && props.selectedProject && <GitHubRepositorySettings project={props.selectedProject} onLoadRepositories={props.onLoadGitHubRepositories} onGetRepository={props.onGetProjectRepository} onSetRepository={props.onSetProjectRepository} onClose={() => setRepoSettingsOpen(false)} />}
       {addMembersOpen && <AddMembersModal members={props.members} currentUserID={props.currentUserID} onLoadUserDirectory={props.onLoadUserDirectory} onAddMember={props.onAddMember} onClose={closeAddMembers} />}
@@ -400,7 +406,8 @@ function Sidebar({
   onOpenBoard,
   onAddProject,
   onLogout,
-}: Pick<ProjectBoardProps, 'projects' | 'selectedProjectId' | 'screen' | 'projectRole' | 'globalRole' | 'email' | 'onSelectProject' | 'onShowProjects' | 'onShowCalendar' | 'onShowAdmin' | 'onShowMyIssues' | 'onShowActivity' | 'onShowAnalytics' | 'onShowChat' | 'onShowUsers' | 'onOpenBoard' | 'onAddProject' | 'onLogout'> & { showUserManagement: boolean }) {
+  onLinkOAuthProvider,
+}: Pick<ProjectBoardProps, 'projects' | 'selectedProjectId' | 'screen' | 'projectRole' | 'globalRole' | 'email' | 'onSelectProject' | 'onShowProjects' | 'onShowCalendar' | 'onShowAdmin' | 'onShowMyIssues' | 'onShowActivity' | 'onShowAnalytics' | 'onShowChat' | 'onShowUsers' | 'onOpenBoard' | 'onAddProject' | 'onLogout' | 'onLinkOAuthProvider'> & { showUserManagement: boolean }) {
   return (
     <aside className="sidebar">
       <div className="sidebar-main">
@@ -446,6 +453,11 @@ function Sidebar({
           <button className="icon-button logout" type="button" aria-label="Sign out" title="Sign out" onClick={onLogout}>
             <span className="material-symbols-outlined" aria-hidden="true">logout</span>
           </button>
+        </div>
+        <div className="linked-accounts">
+          <span>Link sign-in</span>
+          <button type="button" aria-label="Link GitHub sign-in" onClick={() => void onLinkOAuthProvider('github')}>GitHub</button>
+          <button type="button" aria-label="Link Google sign-in" onClick={() => void onLinkOAuthProvider('google')}>Google</button>
         </div>
       </div>
     </aside>

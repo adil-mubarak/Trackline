@@ -237,3 +237,24 @@ describe('restoring UI identity from an existing session token', () => {
     expect(batches.map(batch => batch.length)).toEqual([100, 1])
   })
 })
+
+describe('provider sign-in entry points', () => {
+  it('offers Google and GitHub alongside the existing email/password flow', () => {
+    render(<App />)
+    expect(screen.getByRole('button', { name: 'GitHub' })).not.toBeNull()
+    expect(screen.getByRole('button', { name: 'Google' })).not.toBeNull()
+    expect(screen.getByLabelText('Email address')).not.toBeNull()
+    expect(screen.getByLabelText('Password')).not.toBeNull()
+  })
+
+  it('exchanges a provider callback fragment into the existing local session workflow', async () => {
+    const payload = btoa(JSON.stringify({ sub: 73, role: 'member', exp: 4_000_000_000 }))
+    const token = `header.${payload}.signature`
+    window.history.replaceState(null, '', `/#oauth_token=${encodeURIComponent(token)}`)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })))
+    render(<App />)
+    await waitFor(() => expect(localStorage.getItem('token')).toBe(token))
+    expect(localStorage.getItem('user_id')).toBe('73')
+    expect(window.location.hash).toBe('')
+  })
+})

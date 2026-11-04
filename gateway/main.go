@@ -38,7 +38,7 @@ func main() {
 		"projects": env("PROJECT_SERVICE_URL", "http://project:8082"),
 		"issues":   env("ISSUE_SERVICE_URL", "http://issue:8083"),
 		"activity": env("ACTIVITY_SERVICE_URL", "http://activity:8084"),
-		"ai":       env("AI_SERVICE_URL", "http://ai:8087"),
+		"ai":       strings.TrimRight(os.Getenv("AI_SERVICE_URL"), "/"),
 	}
 	handler := newGatewayHandler(secret, routes, bucket, transport)
 	handler = corsMiddleware(parseAllowedOrigins(env("CORS_ALLOWED_ORIGINS", "")), handler)
@@ -251,6 +251,8 @@ func gatewayRoute(routes map[string]string, path string) (target string, protect
 		return routes["auth"], true, routes["auth"] != ""
 	case path == "/auth/session":
 		return routes["auth"], true, routes["auth"] != ""
+	case path == "/auth/oauth/github/link" || path == "/auth/oauth/google/link":
+		return routes["auth"], true, routes["auth"] != ""
 	case strings.HasPrefix(path, "/auth/"):
 		return routes["auth"], false, routes["auth"] != ""
 	case path == "/users/autocomplete":
@@ -270,6 +272,8 @@ func gatewayRoute(routes map[string]string, path string) (target string, protect
 	case path == "/activity" || strings.HasPrefix(path, "/activity/"):
 		return routes["activity"], true, routes["activity"] != ""
 	case path == "/ai/chat":
+		return routes["ai"], true, routes["ai"] != ""
+	case path == "/ai/conversations" || strings.HasPrefix(path, "/ai/conversations/"):
 		return routes["ai"], true, routes["ai"] != ""
 	case path == "/github/repositories":
 		return routes["ai"], true, routes["ai"] != ""

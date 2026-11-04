@@ -13,6 +13,13 @@ set -Eeuo pipefail
 : "${ISSUE_MIGRATE_DATABASE_URL:?ISSUE_MIGRATE_DATABASE_URL is required}"
 : "${ACTIVITY_DATABASE_URL:?ACTIVITY_DATABASE_URL is required}"
 : "${ACTIVITY_MIGRATE_DATABASE_URL:?ACTIVITY_MIGRATE_DATABASE_URL is required}"
+if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+  : "${AI_DATABASE_URL:?AI_DATABASE_URL is required when OPENROUTER_API_KEY is configured}"
+  : "${AI_MIGRATE_DATABASE_URL:?AI_MIGRATE_DATABASE_URL is required when OPENROUTER_API_KEY is configured}"
+  export AI_SERVICE_URL=http://127.0.0.1:8087
+else
+  export AI_SERVICE_URL=
+fi
 
 children=()
 shutdown() {
@@ -107,6 +114,9 @@ run_migration auth_db "$AUTH_MIGRATE_DATABASE_URL"
 run_migration project_db "$PROJECT_MIGRATE_DATABASE_URL"
 run_migration issue_db "$ISSUE_MIGRATE_DATABASE_URL"
 run_migration activity_db "$ACTIVITY_MIGRATE_DATABASE_URL"
+if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+  run_migration ai_db "$AI_MIGRATE_DATABASE_URL"
+fi
 
 export AUTH_ADDR=127.0.0.1:8081
 export AUTH_SERVICE_URL=http://127.0.0.1:8081
@@ -132,6 +142,13 @@ export ACTIVITY_DATABASE_URL
 export PROJECT_SERVICE_URL
 start_child activity
 wait_http activity http://127.0.0.1:8084/ready
+
+if [[ -n "${OPENROUTER_API_KEY:-}" ]]; then
+  export AI_ADDR=127.0.0.1:8087
+  export AI_DATABASE_URL OPENROUTER_API_KEY
+  start_child ai
+  wait_http ai http://127.0.0.1:8087/ready
+fi
 
 wait_http "gateway" "http://127.0.0.1:${PORT}/ready"
 

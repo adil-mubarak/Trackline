@@ -55,9 +55,22 @@ func requestsDoneTaskSummary(message string) bool {
 	return hasDone && hasTask && hasPerson && hasCrossProject
 }
 
+func requestsIssueCountChart(message string) bool {
+	text := strings.ToLower(message)
+	wantsChart := strings.Contains(text, "graph") || strings.Contains(text, "chart") || strings.Contains(text, "plot") || strings.Contains(text, "visual")
+	metric := strings.Contains(text, "done") || strings.Contains(text, "completed") || strings.Contains(text, "performance") || strings.Contains(text, "workload")
+	peopleOrProjects := strings.Contains(text, "user") || strings.Contains(text, "employee") || strings.Contains(text, "assignee") || strings.Contains(text, "team") || strings.Contains(text, "project")
+	return wantsChart && metric && peopleOrProjects
+}
+
 func summarizeDoneTasksAcrossProjects(ctx context.Context, gatewayURL, bearerToken, requestID string, client *http.Client) (string, error) {
+	result, err := summarizeDoneTasksAcrossProjectsWithCharts(ctx, gatewayURL, bearerToken, requestID, client, "all projects")
+	return result.Reply, err
+}
+
+func summarizeDoneTasksAcrossProjectsWithCharts(ctx context.Context, gatewayURL, bearerToken, requestID string, client *http.Client, question string) (chatResult, error) {
 	if strings.TrimSpace(bearerToken) == "" || strings.TrimSpace(gatewayURL) == "" {
-		return "", errors.New("authenticated tracker access is required")
+		return chatResult{}, errors.New("authenticated tracker access is required")
 	}
 	if client == nil {
 		client = &http.Client{Timeout: 7 * time.Second}
@@ -66,25 +79,25 @@ func summarizeDoneTasksAcrossProjects(ctx context.Context, gatewayURL, bearerTok
 	defer cancel()
 	projectsData, err := callGatewayJSON(ctx, client, gatewayURL, bearerToken, requestID, http.MethodGet, "/projects", nil)
 	if err != nil {
-		return "", err
+		return chatResult{}, err
 	}
 	var projects []taskSummaryProject
 	if json.Unmarshal(projectsData, &projects) != nil {
-		return "", errors.New("invalid accessible projects response")
+		return chatResult{}, errors.New("invalid accessible projects response")
 	}
 	if len(projects) > maxTaskSummaryProjects {
-		return "", errors.New("accessible project count exceeds the complete-summary limit")
+		return chatResult{}, errors.New("accessible project count exceeds the complete-summary limit")
 	}
 	if len(projects) == 0 {
-		return "No accessible projects were found for your account.", nil
+		return chatResult{Reply: "No accessible projects were found for your account.", Model: "tracker-data-summary"}, nil
 	}
 	seenProjects := make(map[uint64]struct{}, len(projects))
 	for _, project := range projects {
 		if project.ID == 0 {
-			return "", errors.New("invalid project ID in accessible projects response")
+			return chatResult{}, errors.New("invalid project ID in accessible projects response")
 		}
 		if _, exists := seenProjects[project.ID]; exists {
-			return "", errors.New("duplicate project ID in accessible projects response")
+			return chatResult{}, errors.New("duplicate project ID in accessible projects response")
 		}
 		seenProjects[project.ID] = struct{}{}
 	}
@@ -136,16 +149,18 @@ func summarizeDoneTasksAcrossProjects(ctx context.Context, gatewayURL, bearerTok
 	}
 	var unassignedDone, totalDone uint64
 	completedProjects := 0
+	projectCounts := make([]aiChartPoint, 0, len(projects))
 	for result := range results {
 		if result.Err != nil {
 			cancel()
-			return "", fmt.Errorf("could not retrieve complete issue data for project %d: %w", result.Project.ID, result.Err)
+			return chatResult{}, fmt.Errorf("could not retrieve complete issue data for project %d: %w", result.Project.ID, result.Err)
 		}
 		completedProjects++
+		projectCounts = append(projectCounts, aiChartPoint{Label: result.Project.Name, Value: result.Counts.ByStatus.Done})
 		unassignedDone += result.Counts.DoneUnassigned
 		for _, item := range result.Counts.DoneByAssignee {
 			if item.AssigneeID == 0 {
-				return "", errors.New("analytics returned an invalid assignee ID")
+				return chatResult{}, errors.New("analytics returned an invalid assignee ID")
 			}
 			total := byUser[item.AssigneeID]
 			if total == nil {
@@ -158,10 +173,10 @@ func summarizeDoneTasksAcrossProjects(ctx context.Context, gatewayURL, bearerTok
 		}
 	}
 	if completedProjects != len(projects) {
-		return "", errors.New("could not retrieve complete issue totals")
+		return chatResult{}, errors.New("could not retrieve complete issue totals")
 	}
 	if len(byUser) > 500 {
-		return "", errors.New("assignee count exceeds complete-summary limit")
+		return chatResult{}, errors.New("assignee count exceeds complete-summary limit")
 	}
 
 	userIDs := make([]uint64, 0, len(byUser))
@@ -175,18 +190,18 @@ func summarizeDoneTasksAcrossProjects(ctx context.Context, gatewayURL, bearerTok
 			UserIDs []uint64 `json:"user_ids"`
 		}{UserIDs: userIDs[start:end]})
 		if err != nil {
-			return "", fmt.Errorf("encode user-name lookup: %w", err)
+			return chatResult{}, fmt.Errorf("encode user-name lookup: %w", err)
 		}
 		namesData, err := callGatewayJSON(ctx, client, gatewayURL, bearerToken, requestID, http.MethodPost, "/users/names", body)
 		if err != nil {
-			return "", fmt.Errorf("resolve assignee names: %w", err)
+			return chatResult{}, fmt.Errorf("resolve assignee names: %w", err)
 		}
 		var names []struct {
 			ID       uint64 `json:"id"`
 			Username string `json:"username"`
 		}
 		if json.Unmarshal(namesData, &names) != nil {
-			return "", errors.New("invalid user-name lookup response")
+			return chatResult{}, errors.New("invalid user-name lookup response")
 		}
 		for _, name := range names {
 			if total := byUser[name.ID]; total != nil && strings.TrimSpace(name.Username) != "" {
@@ -198,7 +213,7 @@ func summarizeDoneTasksAcrossProjects(ctx context.Context, gatewayURL, bearerTok
 	users := make([]*userDoneTotal, 0, len(byUser))
 	for _, total := range byUser {
 		if total.Username == "" {
-			total.Username = fmt.Sprintf("User %d", total.ID)
+			total.Username = "Unknown user"
 		}
 		users = append(users, total)
 	}
@@ -232,9 +247,24 @@ func summarizeDoneTasksAcrossProjects(ctx context.Context, gatewayURL, bearerTok
 			fmt.Fprintf(&output, "| %s | %d | %s |\n", username, user.Count, strings.Join(contributions, ", "))
 		}
 	}
-	fmt.Fprintf(&output, "\nUnassigned issues marked done: %d. Total assigned issues marked done: %d. Counts are aggregated by tracker assignee ID across projects you can access.", unassignedDone, totalDone)
+	fmt.Fprintf(&output, "\nUnassigned issues marked done: %d. Total assigned issues marked done: %d. Assigned counts are aggregated across projects you can access.", unassignedDone, totalDone)
 	if output.Len() > 32<<10 {
-		return "", errors.New("formatted task summary exceeds response limit")
+		return chatResult{}, errors.New("formatted task summary exceeds response limit")
 	}
-	return output.String(), nil
+	result := chatResult{Reply: output.String(), Model: "tracker-data-summary"}
+	text := strings.ToLower(question)
+	if strings.Contains(text, "project") {
+		sort.Slice(projectCounts, func(i, j int) bool {
+			return strings.ToLower(projectCounts[i].Label) < strings.ToLower(projectCounts[j].Label)
+		})
+		result.Charts = append(result.Charts, aiChart{Type: "bar", Title: "Current issues marked done by project", Note: "One current status snapshot; this is not a delivery-performance score or a trend over time.", Data: projectCounts})
+	}
+	if strings.Contains(text, "user") || strings.Contains(text, "employee") || strings.Contains(text, "assignee") || strings.Contains(text, "team") {
+		userPoints := make([]aiChartPoint, 0, len(users))
+		for _, user := range users {
+			userPoints = append(userPoints, aiChartPoint{Label: user.Username, Value: user.Count})
+		}
+		result.Charts = append(result.Charts, aiChart{Type: "bar", Title: "Issues marked done by assignee", Note: "Listed alphabetically, not ranked. Counts reflect tracker status only and are not employee performance scores.", Data: userPoints})
+	}
+	return result, nil
 }

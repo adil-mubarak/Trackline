@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import ChatPage from './ChatPage'
 
@@ -45,5 +45,25 @@ describe('ChatPage assistant formatting', () => {
     expect(userMessage?.textContent).toBe(prompt)
     expect(userMessage?.querySelector('strong, h1')).toBeNull()
     await screen.findByText('Answer')
+  })
+
+  it('renders factual chart data and lists, restores, and deletes saved chats', async () => {
+    const loadMessages = vi.fn(async () => [{ id: 1, role: 'user' as const, content: 'Older question', created_at: '2026-11-04T10:00:00Z' }, { id: 2, role: 'assistant' as const, content: 'Older answer', created_at: '2026-11-04T10:01:00Z' }])
+    const loadConversations = vi.fn(async () => [{ id: 44, title: 'Older question', created_at: '2026-11-04T10:00:00Z', updated_at: '2026-11-04T10:01:00Z' }])
+    const deleteConversation = vi.fn(async () => {})
+    const onAsk = vi.fn(async () => ({
+      reply: 'Status counts only.', conversation_id: 44,
+      charts: [{ type: 'bar' as const, title: 'Issues done by project', note: 'Not a performance score.', data: [{ label: 'Alpha', value: 2 }, { label: 'Beta', value: 1 }] }],
+    }))
+    render(<ChatPage onAsk={onAsk} onLoadConversations={loadConversations} onLoadMessages={loadMessages} onDeleteConversation={deleteConversation} />)
+    fireEvent.change(screen.getByPlaceholderText('Ask about your projects or issues…'), { target: { value: 'Make a chart' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Ask' }))
+    expect(await screen.findByRole('figure')).not.toBeNull()
+    expect(screen.getByRole('table', { name: 'Issues done by project' }).textContent).toContain('Alpha')
+    fireEvent.click(await screen.findByRole('button', { name: 'Older question' }))
+    await screen.findByText('Older answer')
+    expect(loadMessages).toHaveBeenCalledWith(44)
+    fireEvent.click(screen.getByRole('button', { name: 'Delete chat Older question' }))
+    await waitFor(() => expect(deleteConversation).toHaveBeenCalledWith(44))
   })
 })
