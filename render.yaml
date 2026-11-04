@@ -38,3 +38,25 @@ services:
         sync: false
       - key: AI_MIGRATE_DATABASE_URL
         sync: false
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        sync: false
+      - key: GOOGLE_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_OAUTH_CLIENT_ID
+        sync: false
+      - key: GITHUB_OAUTH_CLIENT_SECRET
+        sync: false
+      - key: OAUTH_CALLBACK_BASE_URL
+        sync: false
+      - key: OAUTH_FRONTEND_URL
+        sync: false
+      - key: GITHUB_APP_ID
+        sync: false
+      - key: GITHUB_INSTALLATION_ID
+        sync: false
+      - key: GITHUB_PRIVATE_KEY
+        sync: false
+      - key: GITHUB_EVIDENCE_TO_OPENROUTER
+        value: "false"
+      - key: GITHUB_CODE_TO_OPENROUTER
+        value: "false"
