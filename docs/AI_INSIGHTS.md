@@ -85,10 +85,11 @@ checks, and recorded review approval are evidence of those events only—not a
 guarantee that requirements were met or that one individual was solely
 responsible.
 
-The AI service's in-process MCP adapter exposes the selected GitHub evidence
-tool only when its GitHub App is configured. It uses the GitHub App/API rather
-than giving the model a general-purpose credential or unrestricted GitHub MCP
-server. Setup and deployment variables are documented in
+The AI service exposes selected GitHub evidence tools locally only when its
+GitHub App is configured; these tools are separate from the remote standalone
+MCP tool set. It uses the GitHub App/API rather than giving the model a
+general-purpose credential or unrestricted GitHub MCP server. Setup and
+deployment variables are documented in
 [`github-app.md`](github-app.md).
 
 - Connect only organization-approved repositories. Prefer a GitHub App
@@ -221,11 +222,14 @@ must not be presented as productivity or quality scores.
 These are feature sub-phases under the existing Phase 7; they do not replace or
 reorder the main build plan.
 
-Implementation note: the current tracker-only MVP uses an in-process MCP server
-and client from the official Go SDK inside the AI service. The model's OpenRouter
-tool calls are translated to MCP `CallTool` requests; MCP handlers use only
-caller-authenticated Gateway APIs. This avoids adding a separately reachable
-MCP service and keeps caller credentials scoped to the AI-to-Gateway requests.
+Implementation note: the current AI service uses the official Go SDK as a
+Streamable HTTP client to the separately running `services/mcp` endpoint,
+configured by `MCP_INTERNAL_URL`. Remote tool discovery supplies OpenRouter's
+tool definitions; calls are made to the private MCP process, which uses
+caller-authenticated Gateway APIs. The public Gateway `/mcp` route is for
+external MCP clients, not the AI service. GitHub App tools remain local to AI.
+See [`AI_MCP.md`](AI_MCP.md) for configuration, trust boundaries, and
+troubleshooting.
 The authenticated frontend has an AI Copilot panel on the workspace plus a
 full-page entry. It stores successful turns in AI-owned `ai_db`; the history
 sidebar lists, loads, and deletes owner-scoped conversations. Expired records

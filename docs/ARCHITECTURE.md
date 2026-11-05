@@ -22,18 +22,25 @@ optional and a provider outage does not make core tracker routes unready.
 
 The AI service is routed through the Gateway at `/ai/chat`; the Gateway
 validates the caller's JWT before forwarding. OpenRouter credentials are configured
-only on the AI service. The current chat endpoint sends the submitted message to
-OpenRouter and exposes a bounded read-only tool set for project lists/details,
-issue analytics/lists/details, project activity, and project members. The AI
-service creates a per-chat in-process MCP server/client session using the
-official Go SDK. OpenRouter's tool definitions are built from MCP tool discovery;
-model tool calls are dispatched through `CallTool`, then the MCP handlers call
-the Gateway with the caller's bearer token so owning APIs enforce permissions.
-The caller token is not included in OpenRouter requests. There is no separately
-reachable MCP endpoint or MCP deployable, and the AI service never queries
-service-owned tables. Tool calls are capped at six across three rounds, each
-Gateway response at 48 KiB, and aggregate tool evidence at 128 KiB. GitHub
-evidence retrieval is not implemented yet.
+only on the AI service. For tool-enabled chat, AI connects as a Streamable HTTP
+MCP client to the separately running `services/mcp` process at
+`MCP_INTERNAL_URL`. The default is `http://127.0.0.1:8088/mcp`; Compose sets
+`http://mcp:8088/mcp`. Render's single-container startup starts MCP on
+`127.0.0.1:8088`, so the AI default applies there as well. The MCP listener is
+private and is not the public Gateway `/mcp` endpoint.
+
+AI discovers the remote MCP tool schemas and supplies them to OpenRouter. On
+MCP calls it forwards the caller's bearer token, Gateway-verified `X-User-ID`,
+and bounded `X-Request-ID`; the MCP service then calls Gateway APIs with the
+caller token so owning APIs enforce permissions. The caller token and identity
+are not included in OpenRouter requests. AI rejects unapproved remote tools,
+does not follow redirects on the MCP connection, and returns sanitized errors
+for MCP tool failures. Calls remain capped at six across three rounds, each
+tool result at 48 KiB, and aggregate tool evidence at 128 KiB. GitHub evidence
+and code tools remain local to AI and independently gated by the configured App
+and explicit opt-in flags; they are not advertised by the standalone MCP
+service. The standalone service has no database and also serves external MCP
+clients through the authenticated Gateway `/mcp` route.
 
 Issue list filters are assembled in `services/issue/query.go`: filter values are
 SQL parameters, while sort columns and directions come from fixed allowlists.

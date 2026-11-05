@@ -61,6 +61,7 @@ func main() {
 		strings.EqualFold(strings.TrimSpace(os.Getenv("GITHUB_EVIDENCE_TO_OPENROUTER")), "true"),
 		strings.EqualFold(strings.TrimSpace(os.Getenv("GITHUB_CODE_TO_OPENROUTER")), "true"),
 		db,
+		env("MCP_INTERNAL_URL", "http://127.0.0.1:8088/mcp"),
 	)
 	mux := http.NewServeMux()
 	mux.Handle("/health", health.Handler(nil))
@@ -171,7 +172,7 @@ func newAIHandlerWithIntegrations(apiKey, baseURL, model, gatewayURL string, cli
 	return newAIHandlerWithStore(apiKey, baseURL, model, gatewayURL, client, github, githubEvidenceEnabled, githubCodeEnabled, nil)
 }
 
-func newAIHandlerWithStore(apiKey, baseURL, model, gatewayURL string, client *http.Client, github *githubApp, githubEvidenceEnabled, githubCodeEnabled bool, db *sql.DB) http.Handler {
+func newAIHandlerWithStore(apiKey, baseURL, model, gatewayURL string, client *http.Client, github *githubApp, githubEvidenceEnabled, githubCodeEnabled bool, db *sql.DB, mcpURL ...string) http.Handler {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusMethodNotAllowed, errorResponse{Error: "method not allowed"})
@@ -265,9 +266,17 @@ func newAIHandlerWithStore(apiKey, baseURL, model, gatewayURL string, client *ht
 		if bearerToken != "" && !codeReviewMode {
 			var err error
 			evidenceApp := githubEvidenceForChat(github, githubEvidenceEnabled)
-			toolSession, availableTools, err = newTrackerMCP(ctx, gatewayURL, bearerToken, requestID, client, evidenceApp)
+			remoteMCPURL := ""
+			if len(mcpURL) > 0 {
+				remoteMCPURL = mcpURL[0]
+			}
+			codeApp := (*githubApp)(nil)
+			if githubCodeEnabled {
+				codeApp = github
+			}
+			toolSession, availableTools, err = newTrackerMCP(ctx, gatewayURL, bearerToken, requestID, client, evidenceApp, remoteMCPURL, r.Header.Get("X-User-ID"), codeApp)
 			if err != nil {
-				slog.Warn("could not initialize tracker MCP tools", "error", err)
+				slog.Warn("could not initialize tracker MCP tools", "category", "initialization_failed", "request_id", requestID)
 				writeJSON(w, http.StatusBadGateway, errorResponse{Error: "tracker tools are unavailable"})
 				return
 			}
@@ -335,9 +344,28 @@ func newAIHandlerWithStore(apiKey, baseURL, model, gatewayURL string, client *ht
 				if len(toolCall.Function.Arguments) > 16<<10 {
 					toolErr = errors.New("tool arguments exceed size limit")
 				} else {
-					output, toolErr = callMCPTool(ctx, toolSession, toolCall.Function.Name, toolCall.Function.Arguments)
+					if toolCall.Function.Name == "linked_pr_evidence" || toolCall.Function.Name == "linked_pr_code_changes" {
+						var data json.RawMessage
+						if toolCall.Function.Name == "linked_pr_evidence" {
+							if !githubEvidenceEnabled {
+								toolErr = errors.New("GitHub evidence tool is disabled")
+							} else {
+								data, toolErr = linkedPREvidence(ctx, gatewayURL, bearerToken, requestID, json.RawMessage(toolCall.Function.Arguments), client, github)
+							}
+						} else {
+							if !githubCodeEnabled {
+								toolErr = errors.New("GitHub code changes tool is disabled")
+							} else {
+								data, toolErr = linkedPRCodeChanges(ctx, gatewayURL, bearerToken, requestID, json.RawMessage(toolCall.Function.Arguments), client, github)
+							}
+						}
+						output = string(data)
+					} else {
+						output, toolErr = callMCPTool(ctx, toolSession, toolCall.Function.Name, toolCall.Function.Arguments)
+					}
 				}
 				if toolErr != nil {
+					slog.Warn("tracker MCP tool call failed", "request_id", requestID, "tool", toolCall.Function.Name, "error", toolErr)
 					encoded, _ := json.Marshal(map[string]string{"error": toolErr.Error()})
 					output = string(encoded)
 				}

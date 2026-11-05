@@ -41,6 +41,20 @@ paths:
         '200': { description: Model reply }
         '401': { description: Invalid user session }
         '502': { description: AI or OpenRouter service unavailable }
+  /mcp:
+    post:
+      security: [{ bearerAuth: [] }]
+      summary: Authenticated Streamable HTTP MCP endpoint
+      description: Proxies MCP JSON-RPC requests to the private standalone MCP service.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, description: MCP JSON-RPC request }
+      responses:
+        '200': { description: MCP JSON-RPC response }
+        '401': { description: Missing or invalid Trackline bearer token }
+        '502': { description: MCP service unavailable }
 components:
   securitySchemes:
     bearerAuth:

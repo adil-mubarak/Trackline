@@ -131,6 +131,23 @@ func TestGitHubHandlersAndMCPDisableGracefullyWithoutApp(t *testing.T) {
 	}
 }
 
+func TestIdentityTransportForwardsCallerContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer private-token" || r.Header.Get("X-User-ID") != "55" || r.Header.Get("X-Request-ID") != "req-1" {
+			t.Errorf("identity headers not forwarded: %#v", r.Header)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	request, _ := http.NewRequest(http.MethodPost, server.URL, nil)
+	request.Header.Set("Authorization", "Bearer attacker-controlled")
+	response, err := (&http.Client{Transport: &identityTransport{bearer: "private-token", userID: "55", requestID: "req-1"}}).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+}
+
 func TestLinkedPRCodeChangesAreBoundedAndRedacted(t *testing.T) {
 	app, githubServer := testGitHubApp(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {

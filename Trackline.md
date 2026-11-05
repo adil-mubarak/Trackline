@@ -20,7 +20,7 @@ Phases run in order: contracts and auth first, each service next, the frontend l
 
 ## Services
 
-The core tracker has an API gateway and four independently owned domain services. The optional AI Copilot is a separately deployable fifth service with its own database; it is an explicit Phase 7 extension, not a replacement for or prerequisite to the core tracker. MCP is an in-process tool adapter inside AI, not another deployable service.
+The core tracker has an API gateway and four independently owned domain services. The optional AI Copilot is a separately deployable fifth service with its own database; it is an explicit Phase 7 extension, not a replacement for or prerequisite to the core tracker. AI chat is a Streamable HTTP client of the separately running, stateless MCP service. External MCP clients reach that service only through the authenticated Gateway.
 
 ```mermaid
 flowchart TD
@@ -31,10 +31,12 @@ flowchart TD
     ISS -- "membership check (LRU cache)" --> PROJ
     ISS -- "IssueCreated, StatusChanged" --> BR["Event broker: NATS or Redis Streams"]
     BR -- "consumes" --> ACT["Activity service<br/>Activity log, notifications<br/>Database: activity_db"]
-    GW -. "optional /ai routes" .-> AI["AI service<br/>Chat orchestration + in-process MCP<br/>Database: ai_db"]
+    GW -. "optional /ai routes" .-> AI["AI service<br/>Chat orchestration + MCP HTTP client<br/>Database: ai_db"]
+    GW -. "authenticated /mcp" .-> STANDALONE["Standalone MCP service<br/>Streamable HTTP; no database"]
+    STANDALONE --> GW
     AI --> OR["OpenRouter<br/>External model provider"]
-    AI -. "allowlisted tool calls" .-> MCP["MCP adapter<br/>in-process; no public endpoint"]
-    MCP --> GW
+    AI -- "MCP_INTERNAL_URL; caller identity" --> STANDALONE
+    STANDALONE -- "caller-scoped API calls" --> GW
 ```
 
 | Service | Owns | Own database |
@@ -51,7 +53,8 @@ flowchart TD
 - **Async events:** `IssueCreated` and `StatusChanged` go through a broker (NATS or Redis Streams), and the Activity service consumes them.
 - **No cross-service joins:** the Issue service stores user IDs only, and names are enriched at the gateway or in the UI. Explain this choice in your architecture docs.
 - **Optional AI boundary:** the AI service owns `ai_db`; only AI accesses its transcript tables. AI retrieves tracker data by calling allowlisted APIs through the Gateway, never by querying Auth, Project, Issue, or Activity databases.
-- **MCP boundary:** the current implementation uses the official Go MCP SDK in an in-process server/client session. It exposes bounded, read-only tools; there is no public MCP endpoint or separate MCP service. The Gateway authenticates the caller and the owning service enforces access.
+- **AI's MCP boundary:** AI connects to the separately running `services/mcp` Streamable HTTP endpoint using `MCP_INTERNAL_URL`. It forwards the caller's bearer token, Gateway-verified user ID, and bounded request ID; the model provider receives neither credentials nor identity. Configure this URL only for a trusted private endpoint. GitHub tools remain local to AI and independently feature-gated.
+- **Standalone MCP service:** `services/mcp` provides a bounded read-only tracker tool set. AI connects over the private endpoint (`http://mcp:8088/mcp` in Compose; loopback `http://127.0.0.1:8088/mcp` in the local process and Render deployments). External clients instead connect to the Gateway URL `/mcp` and provide a Trackline bearer token. The service has no database or GitHub App tools.
 
 ## Inside each service
 
@@ -216,7 +219,7 @@ sequenceDiagram
     participant GW as Gateway
     participant AI as AI service
     participant LLM as OpenRouter
-    participant MCP as In-process MCP adapter
+    participant MCP as Private standalone MCP service
     participant API as Owning tracker API
     participant DB as AI-owned ai_db
     User->>UI: Ask question / open saved chat
@@ -233,7 +236,7 @@ sequenceDiagram
         AI->>LLM: Send prompt (no bearer token)
         LLM-->>AI: Answer or bounded tool request
         opt Model requests tracker facts
-            AI->>MCP: Dispatch allowlisted read-only tool
+            AI->>MCP: Streamable HTTP tool call + caller identity
             MCP->>GW: Call owning API with caller bearer token
             GW->>API: Forward authenticated request
             API->>API: Enforce caller/project permissions
@@ -248,10 +251,11 @@ sequenceDiagram
     GW-->>UI: Response
 ```
 
-- Use the official Go MCP SDK with an in-process server/client session inside
-  AI. MCP tool discovery supplies the model's function definitions; model tool
-  calls are dispatched through MCP. There is no separately deployed MCP server,
-  public MCP endpoint, or database access from MCP tools.
+- AI uses the official Go MCP SDK as a Streamable HTTP client of the separately
+  running `services/mcp` process. Remote tool discovery supplies the model's
+  function definitions; model tool calls are dispatched through that service.
+  The internal MCP listener is private; external MCP clients use Gateway `/mcp`.
+  Neither MCP component accesses a database.
 - Initial tools are allowlisted, read-only project, issue, activity, and member
   lookups. Enforce caller authorization in owning APIs. Bound tool calls,
   rounds, arguments, output size, aggregate evidence, request size, and deadlines.

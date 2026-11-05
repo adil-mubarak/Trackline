@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestOpenAIDatabaseRegistersTracklineTLS(t *testing.T) {
@@ -644,5 +646,110 @@ func TestChatHandlerDoesNotExposeOpenRouterErrorBody(t *testing.T) {
 	}
 	if strings.Contains(response.Body.String(), "sensitive provider detail") {
 		t.Fatalf("provider body leaked: %s", response.Body.String())
+	}
+}
+
+func TestRemoteMCPDiscoveryCallIdentityAndRedirectProtection(t *testing.T) {
+	var gotAuth, gotUser, gotRequest string
+	remote := mcp.NewServer(&mcp.Implementation{Name: "test-mcp", Version: "1"}, nil)
+	remote.AddTool(&mcp.Tool{Name: "list_projects", Description: "projects", InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false}}, func(_ context.Context, _ *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: `[{"id":42}]`}}}, nil
+	})
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotUser, gotRequest = r.Header.Get("Authorization"), r.Header.Get("X-User-ID"), r.Header.Get("X-Request-ID")
+		mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return remote }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true}).ServeHTTP(w, r)
+	})
+	tracker := httptest.NewServer(handler)
+	defer tracker.Close()
+	session, definitions, err := newTrackerMCP(context.Background(), "", "caller-token", "request-42", tracker.Client(), (*githubApp)(nil), tracker.URL, "user-17")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if len(definitions) != 1 || definitions[0].Function.Name != "list_projects" {
+		t.Fatalf("discovered definitions=%+v", definitions)
+	}
+	result, err := callMCPTool(context.Background(), session, "list_projects", `{}`)
+	if err != nil || result != `[{"id":42}]` {
+		t.Fatalf("call result=%q err=%v", result, err)
+	}
+	if gotAuth != "Bearer caller-token" || gotUser != "user-17" || gotRequest != "request-42" {
+		t.Fatalf("forwarded identity: auth=%q user=%q request=%q", gotAuth, gotUser, gotRequest)
+	}
+}
+
+func TestRemoteDiscoveryRetainsEnabledLocalGitHubTools(t *testing.T) {
+	app, codeApp, extraApp := &githubApp{}, &githubApp{}, &githubApp{}
+	definitions := localGitHubToolDefinitions("unrelated option", app, codeApp, extraApp)
+	if len(definitions) != 2 || definitions[0].Function.Name != "linked_pr_evidence" || definitions[1].Function.Name != "linked_pr_code_changes" {
+		t.Fatalf("local GitHub tool definitions were not retained: %+v", definitions)
+	}
+	for _, tool := range definitions {
+		var schema map[string]any
+		if err := json.Unmarshal(tool.Function.Parameters, &schema); err != nil || schema["type"] != "object" {
+			t.Fatalf("invalid %s schema: %s (%v)", tool.Function.Name, tool.Function.Parameters, err)
+		}
+	}
+}
+
+func TestRemoteMCPToolErrorIsSanitized(t *testing.T) {
+	remote := mcp.NewServer(&mcp.Implementation{Name: "test-mcp", Version: "1"}, nil)
+	remote.AddTool(&mcp.Tool{Name: "list_projects", InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "sensitive internal endpoint and token"}}}, nil
+	})
+	server := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return remote }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true}))
+	defer server.Close()
+	session, _, err := newTrackerMCP(context.Background(), "", "caller-token", "request", server.Client(), server.URL, "user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	result, err := callMCPTool(context.Background(), session, "list_projects", `{}`)
+	if err == nil || result != "" {
+		t.Fatalf("result=%q err=%v, want sanitized error", result, err)
+	}
+	if strings.Contains(err.Error(), "sensitive") || strings.Contains(err.Error(), "token") || err.Error() != "MCP tool returned an error" {
+		t.Fatalf("remote tool details leaked: %v", err)
+	}
+}
+
+func TestLocalGitHubToolsRespectIndependentCapabilities(t *testing.T) {
+	var disabledEvidence *githubApp
+	enabledCode := &githubApp{}
+	definitions := localGitHubToolDefinitions(disabledEvidence, enabledCode)
+	if len(definitions) != 1 || definitions[0].Function.Name != "linked_pr_code_changes" {
+		t.Fatalf("code-only capabilities advertised wrong tools: %+v", definitions)
+	}
+}
+
+func TestIdentityTransportDoesNotForwardCredentialsOnRedirect(t *testing.T) {
+	var leaked bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked = r.Header.Get("Authorization") != "" || r.Header.Get("X-User-ID") != ""
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer target.Close()
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer redirect.Close()
+	_, _, err := newTrackerMCP(context.Background(), "", "secret-token", "request", &http.Client{Timeout: time.Second}, redirect.URL, "user")
+	if err == nil {
+		t.Fatal("redirected MCP endpoint unexpectedly initialized")
+	}
+	if leaked {
+		t.Fatal("caller credentials were sent to redirect target")
+	}
+}
+
+func TestRemoteMCPInitializationHonorsClientTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	_, _, err := newTrackerMCP(context.Background(), "", "caller-token", "request", &http.Client{Timeout: 5 * time.Millisecond}, server.URL, "user")
+	if err == nil {
+		t.Fatal("expected timed-out MCP initialization to fail")
 	}
 }

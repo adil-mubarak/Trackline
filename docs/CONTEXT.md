@@ -23,6 +23,27 @@ readiness.
 - Activity evidence sent to the model resolves actor IDs to usernames first;
   unresolved actors are labeled “Unknown user.” Do not expose raw actor IDs in
   activity answers.
+- A separate `services/mcp` process provides stateless Streamable HTTP for
+  authenticated external MCP clients at the Gateway's `/mcp` route. It has no
+  database or public port; clients use Trackline bearer tokens, and its
+  read-only tools call owning APIs through the Gateway. AI chat is a Streamable
+  HTTP client of this service through private `MCP_INTERNAL_URL`; it forwards
+  the caller's bearer token, Gateway-verified user ID, and bounded request ID.
+  GitHub App tools remain local to AI and are not part of the standalone service.
+- Standalone MCP clients connect to the Gateway URL `/mcp` with a Trackline
+  bearer token, not the private MCP listener. The endpoint is documented in
+  `docs/MCP_SERVER.md`; local `make run-mcp` configures the private service for
+  `127.0.0.1:8088` and its Gateway upstream. The implementation registers seven
+  read-only tools and uses caller-authenticated Gateway APIs. The official Go
+  SDK test covers protocol tool listing and a `get_project` call with token
+  forwarding. This test is not a deployed Render/Aiven check or an external
+  host integration test.
+- Known unresolved challenge: accessible-project listing has reportedly failed
+  in the deployed environment. `list_projects` maps to `GET /projects`, but no
+  reproducer or root cause has been established. Treat the cause as unknown;
+  compare sanitized request IDs and status codes across Gateway/MCP/API logs
+  during a deployment-specific investigation. No deployed fix or successful
+  listing result is asserted.
 - AI charts are deterministic tracker issue-count summaries for issues marked
   done. User charts are alphabetical, unranked counts and explicitly not
   performance scores. Do not infer employee productivity or work quality.
@@ -41,8 +62,8 @@ passed for the AI/history/chart work. The frontend build emits a non-blocking
 large-bundle warning. The focused Copilot launcher regression test and complete
 frontend suite/build also passed. `docker compose config --quiet`, Render startup
 shell syntax, and `git diff --check` passed after the database bootstrap change.
-The bootstrap has not yet been exercised against a running MySQL container, and
-Render deployment and external OAuth provider credentials/callbacks still need
+The database bootstrap and standalone MCP have not yet been exercised against a
+running Compose stack, and Render deployment and external OAuth provider credentials/callbacks still need
 environment-specific verification. Browser-level OAuth behavior has not been
 verified end-to-end.
 
