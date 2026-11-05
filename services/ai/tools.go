@@ -57,7 +57,127 @@ var trackerToolSpecs = []trackerToolSpec{
 	{"list_project_members", "List member usernames and roles for an accessible project. Only IDs returned by the Project service are resolved through Auth; no email addresses are returned.", `{"type":"object","properties":{"project_id":{"type":"integer","minimum":1}},"required":["project_id"],"additionalProperties":false}`},
 }
 
-func newTrackerMCP(ctx context.Context, gatewayURL, bearer, requestID string, client *http.Client, github ...*githubApp) (*mcp.ClientSession, []openRouterTool, error) {
+func newTrackerMCP(ctx context.Context, gatewayURL, bearer, requestID string, client *http.Client, options ...any) (*mcp.ClientSession, []openRouterTool, error) {
+	endpoint, userID := "", ""
+	for _, option := range options {
+		if value, ok := option.(string); ok {
+			if endpoint == "" {
+				endpoint = value
+			} else {
+				userID = value
+			}
+		}
+	}
+	if endpoint == "" {
+		apps := make([]*githubApp, 0, len(options))
+		for _, option := range options {
+			app, _ := option.(*githubApp)
+			apps = append(apps, app)
+		}
+		return legacyTrackerMCP(ctx, gatewayURL, bearer, requestID, client, apps...)
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		return nil, nil, errors.New("MCP_INTERNAL_URL must be an absolute HTTP(S) URL")
+	}
+	if bearer == "" || userID == "" {
+		return nil, nil, errors.New("authenticated caller identity required")
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 12 * time.Second}
+	}
+	transport := &identityTransport{base: client.Transport, bearer: bearer, userID: userID, requestID: requestID}
+	mcpClient := mcp.NewClient(&mcp.Implementation{Name: "tracker-chat-orchestrator", Version: "1.0.0"}, nil)
+	httpClient := &http.Client{Transport: transport, Timeout: client.Timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	session, err := mcpClient.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: endpoint, HTTPClient: httpClient}, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("connect standalone MCP service: %w", err)
+	}
+	listed, err := session.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		_ = session.Close()
+		return nil, nil, fmt.Errorf("discover standalone MCP tools: %w", err)
+	}
+	definitions := make([]openRouterTool, 0, len(listed.Tools)+2)
+	for _, tool := range listed.Tools {
+		if !allowedRemoteTool(tool.Name) {
+			_ = session.Close()
+			return nil, nil, fmt.Errorf("standalone MCP advertised disallowed tool %q", tool.Name)
+		}
+		parameters, marshalErr := json.Marshal(tool.InputSchema)
+		if marshalErr != nil {
+			_ = session.Close()
+			return nil, nil, fmt.Errorf("encode %s MCP schema: %w", tool.Name, marshalErr)
+		}
+		definitions = append(definitions, openRouterTool{Type: "function", Function: openRouterToolDefinition{Name: tool.Name, Description: tool.Description, Parameters: parameters}})
+	}
+	definitions = append(definitions, localGitHubToolDefinitions(options...)...)
+	if len(definitions) == 0 {
+		_ = session.Close()
+		return nil, nil, errors.New("standalone MCP service advertised no tools")
+	}
+	return session, definitions, nil
+}
+
+func localGitHubToolDefinitions(options ...any) []openRouterTool {
+	var app, codeApp *githubApp
+	githubOption := 0
+	for _, option := range options {
+		if value, ok := option.(*githubApp); ok {
+			switch githubOption {
+			case 0:
+				app = value
+			case 1:
+				codeApp = value
+			}
+			githubOption++
+		}
+	}
+	specs := make([]trackerToolSpec, 0, 2)
+	if app != nil {
+		specs = append(specs, trackerToolSpec{"linked_pr_evidence", "Read metadata-only evidence for pull requests explicitly linked to this issue, and only if the project is connected to the same installed repository.", `{"type":"object","properties":{"project_id":{"type":"integer","minimum":1},"issue_id":{"type":"integer","minimum":1}},"required":["project_id","issue_id"],"additionalProperties":false}`})
+	}
+	if codeApp != nil {
+		specs = append(specs, trackerToolSpec{"linked_pr_code_changes", "Read bounded changed-file diff excerpts for pull requests explicitly linked to this issue in its connected installed repository. Do not request arbitrary repository files.", `{"type":"object","properties":{"project_id":{"type":"integer","minimum":1},"issue_id":{"type":"integer","minimum":1}},"required":["project_id","issue_id"],"additionalProperties":false}`})
+	}
+	definitions := make([]openRouterTool, 0, len(specs))
+	for _, spec := range specs {
+		definitions = append(definitions, openRouterTool{Type: "function", Function: openRouterToolDefinition{Name: spec.name, Description: spec.description, Parameters: json.RawMessage(spec.schema)}})
+	}
+	return definitions
+}
+
+type identityTransport struct {
+	base                      http.RoundTripper
+	bearer, userID, requestID string
+}
+
+func (t *identityTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	copy := request.Clone(request.Context())
+	copy.Header = request.Header.Clone()
+	copy.Header.Set("Authorization", "Bearer "+t.bearer)
+	copy.Header.Set("X-User-ID", t.userID)
+	if t.requestID != "" && len(t.requestID) <= 128 {
+		copy.Header.Set("X-Request-ID", t.requestID)
+	}
+	base := t.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(copy)
+}
+
+func allowedRemoteTool(name string) bool {
+	for _, spec := range trackerToolSpecs {
+		if name == spec.name {
+			return true
+		}
+	}
+	return false
+}
+
+/* legacy in-process implementation retained below for GitHub tool handlers */
+func legacyTrackerMCP(ctx context.Context, gatewayURL, bearer, requestID string, client *http.Client, github ...*githubApp) (*mcp.ClientSession, []openRouterTool, error) {
 	server := mcp.NewServer(&mcp.Implementation{Name: "bug-issue-tracker-readonly", Version: "1.0.0"}, &mcp.ServerOptions{})
 	readOnly, openWorld := false, false
 	specs := trackerToolSpecs

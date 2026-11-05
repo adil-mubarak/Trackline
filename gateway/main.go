@@ -39,6 +39,7 @@ func main() {
 		"issues":   env("ISSUE_SERVICE_URL", "http://issue:8083"),
 		"activity": env("ACTIVITY_SERVICE_URL", "http://activity:8084"),
 		"ai":       strings.TrimRight(os.Getenv("AI_SERVICE_URL"), "/"),
+		"mcp":      strings.TrimRight(os.Getenv("MCP_SERVICE_URL"), "/"),
 	}
 	handler := newGatewayHandler(secret, routes, bucket, transport)
 	handler = corsMiddleware(parseAllowedOrigins(env("CORS_ALLOWED_ORIGINS", "")), handler)
@@ -104,10 +105,14 @@ func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 func newGatewayHandler(secret []byte, routes map[string]string, bucket *ratelimit.Bucket, transport http.RoundTripper) http.Handler {
 	mux := http.NewServeMux()
 	aiTransport := transport
+	mcpTransport := transport
 	if baseTransport, ok := transport.(*http.Transport); ok {
 		clonedTransport := baseTransport.Clone()
 		clonedTransport.ResponseHeaderTimeout = 175 * time.Second
 		aiTransport = clonedTransport
+		mcpClonedTransport := baseTransport.Clone()
+		mcpClonedTransport.ResponseHeaderTimeout = 12 * time.Second
+		mcpTransport = mcpClonedTransport
 	}
 	mux.Handle("/health", health.Handler(nil))
 	mux.Handle("/ready", health.Handler(func() error { return checkUpstreams(routes, transport) }))
@@ -169,6 +174,10 @@ func newGatewayHandler(secret []byte, routes map[string]string, bucket *ratelimi
 		proxy := httputil.NewSingleHostReverseProxy(destination)
 		proxy.Transport = transport
 		requestTimeout := 10 * time.Second
+		if r.URL.Path == "/mcp" {
+			proxy.Transport = mcpTransport
+			requestTimeout = 35 * time.Second
+		}
 		if r.URL.Path == "/ai/chat" {
 			proxy.Transport = aiTransport
 			requestTimeout = 185 * time.Second
@@ -187,9 +196,9 @@ func newGatewayHandler(secret []byte, routes map[string]string, bucket *ratelimi
 func checkUpstreams(routes map[string]string, transport http.RoundTripper) error {
 	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
 	for name, target := range routes {
-		// AI is an optional feature. An unconfigured or unavailable model provider
-		// must not take the core issue tracker out of readiness.
-		if name == "ai" {
+		// AI and standalone MCP are optional features; an unavailable provider or
+		// MCP endpoint must not take the core issue tracker out of readiness.
+		if name == "ai" || name == "mcp" || target == "" {
 			continue
 		}
 		u, err := url.Parse(strings.TrimRight(target, "/") + "/ready")
@@ -273,6 +282,8 @@ func gatewayRoute(routes map[string]string, path string) (target string, protect
 		return routes["activity"], true, routes["activity"] != ""
 	case path == "/ai/chat":
 		return routes["ai"], true, routes["ai"] != ""
+	case path == "/mcp":
+		return routes["mcp"], true, routes["mcp"] != ""
 	case path == "/ai/conversations" || strings.HasPrefix(path, "/ai/conversations/"):
 		return routes["ai"], true, routes["ai"] != ""
 	case path == "/github/repositories":

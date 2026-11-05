@@ -336,8 +336,8 @@ func TestGatewayReadinessChecksEveryUpstream(t *testing.T) {
 	if err := checkUpstreams(map[string]string{"missing": "http://127.0.0.1:1"}, http.DefaultTransport); err == nil {
 		t.Fatal("expected unavailable upstream error")
 	}
-	if err := checkUpstreams(map[string]string{"ai": "http://127.0.0.1:1"}, http.DefaultTransport); err != nil {
-		t.Fatalf("optional AI upstream should not block tracker readiness: %v", err)
+	if err := checkUpstreams(map[string]string{"ai": "http://127.0.0.1:1", "mcp": "http://127.0.0.1:1", "optional": ""}, http.DefaultTransport); err != nil {
+		t.Fatalf("optional AI/MCP or unconfigured upstream should not block tracker readiness: %v", err)
 	}
 }
 
@@ -376,6 +376,45 @@ func TestGatewayProtectsAndForwardsAIChat(t *testing.T) {
 	handler.ServeHTTP(w, r)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated status=%d, want %d", w.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestGatewayProtectsAndForwardsMCPIdentityAndBearer(t *testing.T) {
+	secret := []byte("gateway-test-secret-at-least-32-bytes")
+	var seenUser, seenAuth string
+	mcpService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenUser, seenAuth = r.Header.Get("X-User-ID"), r.Header.Get("Authorization")
+		if r.URL.Path != "/mcp" {
+			t.Errorf("MCP path=%q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer mcpService.Close()
+	authService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/auth/session" {
+			_, _ = w.Write([]byte(`{"password_reset_required":false,"password_reset_version":0}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer authService.Close()
+	handler := newGatewayHandler(secret, map[string]string{"auth": authService.URL, "mcp": mcpService.URL}, ratelimit.New(10, 1), http.DefaultTransport)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0"}`)))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d", w.Code)
+	}
+	token, err := auth.IssueToken(93, "member", secret, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0"}`))
+	r.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || seenUser != "93" || seenAuth != "Bearer "+token {
+		t.Fatalf("status=%d user=%q auth forwarded=%v", w.Code, seenUser, seenAuth == "Bearer "+token)
 	}
 }
 

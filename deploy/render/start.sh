@@ -95,12 +95,17 @@ export AUTH_SERVICE_URL=http://127.0.0.1:8081
 export PROJECT_SERVICE_URL=http://127.0.0.1:8082
 export ISSUE_SERVICE_URL=http://127.0.0.1:8083
 export ACTIVITY_SERVICE_URL=http://127.0.0.1:8084
+export MCP_SERVICE_URL=http://127.0.0.1:8088
+export GATEWAY_INTERNAL_URL=http://127.0.0.1:${PORT}
 export CORS_ALLOWED_ORIGINS
 start_child gateway
 
 # The broker and all internal HTTP services listen only on loopback. Render's
 # public ingress reaches only the gateway on its assigned PORT.
 start_child nats-server -a 127.0.0.1 -p 4222 -js -sd /tmp/trackline-nats
+export MCP_ADDR=127.0.0.1:8088
+start_child mcp
+wait_http mcp http://127.0.0.1:8088/ready
 for attempt in {1..30}; do
   if nc -z 127.0.0.1 4222; then break; fi
   sleep 1

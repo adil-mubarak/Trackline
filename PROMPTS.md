@@ -17,6 +17,13 @@
 - Follow-up prompts: Bootstrap missing service databases on existing Compose
   MySQL volumes without deleting data; hide the floating Copilot launcher on
   the full AI page; clarify local Google OAuth redirect configuration; and keep
-  this prompt log and `docs/CONTEXT.md` current.
+  this prompt log and `docs/CONTEXT.md` current. Add a separately runnable,
+  bearer-authenticated Streamable HTTP MCP service behind the Gateway while
+  leaving AI Copilot's in-process adapter unchanged.
 - Roadmap note: `Build_Plan_Bug_Issue_Tracker.md` is referenced by the root
   guidance but is absent; `Trackline.md` is the available phased roadmap.
+- MCP documentation follow-up: document the standalone MCP architecture,
+  protocol tool discovery/calls, setup, prompt/context records, and known
+  challenges without claiming that an external host or deployed service was
+  verified. The accessible-project listing error reported for the deployed
+  Render/Aiven environment remains undiagnosed; its cause is unknown.

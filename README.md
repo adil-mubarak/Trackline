@@ -31,8 +31,9 @@ flowchart TD
 | Issue service | Issues, labels, filtering, search, dependencies | `issue_db` |
 | Activity service | Activity log and feed from issue events | `activity_db` |
 | AI service | Read-only assistant and user-owned chat history | `ai_db` |
+| Standalone MCP service | Authenticated, read-only tracker tools over Streamable HTTP | None |
 
-Each service owns its database and accesses another service only through its API. The Issue service stores user IDs rather than joining against Auth data. It checks project membership through the Project service, with a timeout and an LRU cache. Issue creation and status changes are sent asynchronously to the Activity service through a broker.
+Each service owns its database and accesses another service only through its API. External MCP clients reach the standalone MCP endpoint through authenticated Gateway `/mcp`; its service listener is private. AI chat is an MCP Streamable HTTP client of that separately running service, configured with `MCP_INTERNAL_URL` (Compose: `http://mcp:8088/mcp`; loopback deployments: `http://127.0.0.1:8088/mcp`). GitHub tools remain local to AI and independently feature-gated. See [`docs/AI_MCP.md`](docs/AI_MCP.md). The Issue service stores user IDs rather than joining against Auth data. It checks project membership through the Project service, with a timeout and an LRU cache. Issue creation and status changes are sent asynchronously to the Activity service through a broker.
 
 ## Planned technology
 
@@ -53,6 +54,7 @@ Each service owns its database and accesses another service only through its API
 - A React UI for projects and issues, including filters and a status-grouped Kanban view
 - Health/readiness endpoints, structured logs, request IDs, graceful shutdown, and outgoing-call timeouts
 - Proposed optional AI chat and read-only MCP insights plan: [`docs/AI_INSIGHTS.md`](docs/AI_INSIGHTS.md)
+- Standalone authenticated MCP endpoint: [`docs/MCP_SERVER.md`](docs/MCP_SERVER.md)
 
 ### Data structures and algorithms
 
@@ -96,6 +98,37 @@ Each service owns its database and accesses another service only through its API
    read-only evidence for explicitly linked PRs; see [`docs/github-app.md`](docs/github-app.md).
    Both OpenRouter and GitHub are optional for the core tracker.
 
+## Standalone MCP server quick start
+
+The `services/mcp` server exposes seven read-only Trackline tools over
+Streamable HTTP. For external MCP hosts, connect to the **Gateway** endpoint
+`http://localhost:8082/mcp`, not the private MCP listener. The Gateway requires
+a valid Trackline access token and forwards caller-scoped requests to the owning
+APIs. See [`docs/MCP_SERVER.md`](docs/MCP_SERVER.md) for the architecture,
+protocol walkthrough, host setup notes, and verification limits.
+
+AI chat connects to the private MCP service using `MCP_INTERNAL_URL`; this is
+distinct from the public Gateway `/mcp` route. The caller's bearer credential
+is forwarded only to the configured trusted private MCP endpoint, not to the
+model provider. See [`docs/AI_MCP.md`](docs/AI_MCP.md) for configuration and
+troubleshooting. No deployed fix is claimed.
+
+For local use, first start the app and sign in to obtain a Trackline access
+token. The `make run-trackline` and `make run-backend` targets already start
+the MCP server, so do not run `make run-mcp` as well. Use the standalone target
+below only when you started the rest of the app without MCP:
+
+```sh
+make run-mcp
+```
+
+The target sets `GATEWAY_INTERNAL_URL=http://127.0.0.1:8082` and binds the
+private server to `127.0.0.1:8088`; only the Gateway's `/mcp` route is the client
+endpoint. Configure your MCP host for Streamable HTTP at the Gateway URL and
+provide `Authorization: Bearer <access-token>` using that host's supported
+secret/header configuration. Never commit or share the token. For deployment,
+use the HTTPS Gateway URL and follow [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+
 ## Build roadmap
 
 The work is planned in phases so each service and its documentation can be developed and validated incrementally:
@@ -117,7 +150,7 @@ See [`Trackline.md`](Trackline.md) for the detailed app and assignment plan.
 
 - Docker Engine and the Docker Compose plugin
 - GNU Make
-- Go 1.24+ (for local tests)
+- Go 1.24+ (for local development and tests)
 - Node.js 20+ and npm (for the frontend)
 - `golangci-lint` (for `make lint`)
 
