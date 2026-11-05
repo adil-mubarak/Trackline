@@ -77,6 +77,9 @@ services:
       AUTH_ADDR: ":8081"
       AUTH_DATABASE_URL: root:${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}@tcp(mysql:3306)/auth_db?parseTime=true
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      MCP_OAUTH_INTERNAL_SECRET: ${MCP_OAUTH_INTERNAL_SECRET:-}
+      MCP_OAUTH_ISSUER_URL: ${MCP_OAUTH_ISSUER_URL:-http://localhost:8082}
+      MCP_RESOURCE_URL: ${MCP_RESOURCE_URL:-http://localhost:8082/mcp}
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
       GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
       GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
@@ -197,6 +200,7 @@ services:
     environment:
       MCP_ADDR: ":8088"
       GATEWAY_INTERNAL_URL: http://gateway:8082
+      MCP_USERNAME_LOOKUP_SECRET: ${MCP_USERNAME_LOOKUP_SECRET:-}
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8088/health >/dev/null"]
       interval: 5s
@@ -219,6 +223,10 @@ services:
       AI_SERVICE_URL: http://ai:8087
       MCP_SERVICE_URL: http://mcp:8088
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      MCP_OAUTH_INTERNAL_SECRET: ${MCP_OAUTH_INTERNAL_SECRET:-}
+      MCP_USERNAME_LOOKUP_SECRET: ${MCP_USERNAME_LOOKUP_SECRET:-}
+      MCP_OAUTH_ISSUER_URL: ${MCP_OAUTH_ISSUER_URL:-http://localhost:8082}
+      MCP_RESOURCE_URL: ${MCP_RESOURCE_URL:-http://localhost:8082/mcp}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
     depends_on:
       auth:

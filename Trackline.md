@@ -54,7 +54,7 @@ flowchart TD
 - **No cross-service joins:** the Issue service stores user IDs only, and names are enriched at the gateway or in the UI. Explain this choice in your architecture docs.
 - **Optional AI boundary:** the AI service owns `ai_db`; only AI accesses its transcript tables. AI retrieves tracker data by calling allowlisted APIs through the Gateway, never by querying Auth, Project, Issue, or Activity databases.
 - **AI's MCP boundary:** AI connects to the separately running `services/mcp` Streamable HTTP endpoint using `MCP_INTERNAL_URL`. It forwards the caller's bearer token, Gateway-verified user ID, and bounded request ID; the model provider receives neither credentials nor identity. Configure this URL only for a trusted private endpoint. GitHub tools remain local to AI and independently feature-gated.
-- **Standalone MCP service:** `services/mcp` provides a bounded read-only tracker tool set. AI connects over the private endpoint (`http://mcp:8088/mcp` in Compose; loopback `http://127.0.0.1:8088/mcp` in the local process and Render deployments). External clients instead connect to the Gateway URL `/mcp` and provide a Trackline bearer token. The service has no database or GitHub App tools.
+- **Standalone MCP service:** `services/mcp` provides a bounded read-only tracker tool set. AI connects over the private endpoint (`http://mcp:8088/mcp` in Compose; loopback `http://127.0.0.1:8088/mcp` in the local process and Render deployments). Claude hosted connectors use Auth-owned OAuth authorization code + PKCE through the Gateway `/mcp` URL; compatible developer clients may use a Trackline bearer token. OAuth scopes are restricted to read-only MCP calls. The service has no database or GitHub App tools.
 
 ## Inside each service
 

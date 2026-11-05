@@ -53,6 +53,9 @@ func main() {
 	mux.Handle("/users", h)
 	mux.Handle("/users/", h)
 	mux.Handle("/internal/users/", h)
+	mux.Handle("/internal/oauth/", h)
+	mux.Handle("/.well-known/", h)
+	mux.Handle("/oauth/", h)
 	mux.Handle("/users/autocomplete", h)
 	server := &http.Server{Addr: env("AUTH_ADDR", ":8081"), Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

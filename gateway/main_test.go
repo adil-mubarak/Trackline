@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -75,6 +76,144 @@ func TestGatewayAuthenticationAndRouting(t *testing.T) {
 	}
 	if w.Header().Get("X-Request-ID") != "gateway-test-id" {
 		t.Fatalf("request ID not returned: %q", w.Header().Get("X-Request-ID"))
+	}
+}
+
+func TestGatewayAdvertisesOAuthForUnauthenticatedMCP(t *testing.T) {
+	issuer := "https://trackline.example.test"
+	upstream := httptest.NewServer(http.NotFoundHandler())
+	defer upstream.Close()
+	handler := newGatewayHandler([]byte("gateway-test-secret-at-least-32-bytes"), map[string]string{
+		"auth": upstream.URL, "mcp": upstream.URL, "mcp_oauth_issuer": issuer,
+	}, ratelimit.New(10, 1), http.DefaultTransport)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{}`)))
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	challenge := w.Header().Get("WWW-Authenticate")
+	if !strings.Contains(challenge, issuer+"/.well-known/oauth-protected-resource/mcp") || !strings.Contains(challenge, `scope="mcp:read offline_access"`) {
+		t.Fatalf("missing OAuth discovery challenge: %q", challenge)
+	}
+}
+
+func TestGatewayOAuthTokenIsScopedToReadOnlyMCPRoutes(t *testing.T) {
+	secret := []byte("gateway-test-secret-at-least-32-bytes")
+	resource := "https://trackline.example.test/mcp"
+	var mcpHits, projectHits int
+	var namesHits int
+	mcpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mcpHits++
+		if r.Header.Get("X-User-ID") != "55" || r.Header.Get("Authorization") == "" {
+			t.Errorf("caller context missing: %#v", r.Header)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer mcpUpstream.Close()
+	projectUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		projectHits++
+		if r.Header.Get("X-User-ID") != "55" {
+			t.Errorf("user id not forwarded: %q", r.Header.Get("X-User-ID"))
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer projectUpstream.Close()
+	authUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/users/names" {
+			namesHits++
+			if r.Header.Get("X-User-ID") != "55" || r.Header.Get("X-MCP-Internal-Service-Token") != "" {
+				t.Errorf("username request had unsafe identity headers: %#v", r.Header)
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		if r.URL.Path != "/internal/oauth/introspect" || r.Header.Get("X-Internal-Service-Token") != "gateway-auth-internal-secret-32-bytes" {
+			t.Errorf("bad introspection request: path=%q", r.URL.Path)
+		}
+		var input struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Fatal(err)
+		}
+		_, _, _, _, err := auth.VerifyTokenWithResetState(input.Token, secret)
+		if err != nil {
+			t.Errorf("introspection token invalid: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"active":true,"user_id":55,"role":"member","password_reset_version":0,"scope":"mcp:read offline_access","audience":"` + resource + `"}`))
+	}))
+	defer authUpstream.Close()
+	token, err := auth.IssueScopedToken(55, "member", 0, 17, resource, "mcp:read offline_access", secret, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routes := map[string]string{"auth": authUpstream.URL, "projects": projectUpstream.URL, "issues": projectUpstream.URL, "mcp": mcpUpstream.URL, "mcp_resource": resource, "mcp_oauth_secret": "gateway-auth-internal-secret-32-bytes", "mcp_username_secret": "mcp-username-lookup-secret-32-bytes"}
+	handler := newGatewayHandler(secret, routes, ratelimit.New(20, 1), http.DefaultTransport)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{}`))
+	r.Header.Set("Authorization", "Bearer "+token)
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || mcpHits != 1 {
+		t.Fatalf("MCP request status=%d hits=%d body=%s", w.Code, mcpHits, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodPost, "/issues", strings.NewReader(`{}`))
+	r.Header.Set("Authorization", "Bearer "+token)
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden || projectHits != 0 {
+		t.Fatalf("write request status=%d projectHits=%d", w.Code, projectHits)
+	}
+
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodPost, "/users/names", strings.NewReader(`{"user_ids":[999]}`))
+	r.Header.Set("Authorization", "Bearer "+token)
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden || namesHits != 0 {
+		t.Fatalf("direct username enumeration status=%d hits=%d", w.Code, namesHits)
+	}
+
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodPost, "/users/names", strings.NewReader(`{"user_ids":[999]}`))
+	r.Header.Set("Authorization", "Bearer "+token)
+	r.Header.Set("X-MCP-Internal-Service-Token", "mcp-username-lookup-secret-32-bytes")
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || namesHits != 1 {
+		t.Fatalf("MCP username lookup status=%d hits=%d", w.Code, namesHits)
+	}
+
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodGet, "/projects/42", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || projectHits != 1 {
+		t.Fatalf("read request status=%d projectHits=%d body=%s", w.Code, projectHits, w.Body.String())
+	}
+}
+
+func TestOAuthReadOnlyRouteAllowlist(t *testing.T) {
+	for _, tc := range []struct {
+		method string
+		path   string
+		want   bool
+	}{
+		{http.MethodPost, "/mcp", true},
+		{http.MethodGet, "/projects/12", true},
+		{http.MethodGet, "/projects/12/members", true},
+		{http.MethodPost, "/users/names", true},
+		{http.MethodPost, "/issues", false},
+		{http.MethodDelete, "/projects/12", false},
+		{http.MethodGet, "/users/12", false},
+		{http.MethodGet, "/projects/12/members/13", false},
+		{http.MethodGet, "/projects/../users", false},
+	} {
+		if got := oauthReadOnlyRoute(tc.method, tc.path); got != tc.want {
+			t.Errorf("oauthReadOnlyRoute(%s,%s)=%t want %t", tc.method, tc.path, got, tc.want)
+		}
 	}
 }
 

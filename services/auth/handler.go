@@ -20,10 +20,11 @@ type Handler struct {
 	db     *sql.DB
 	secret []byte
 	oauth  OAuthSettings
+	mcp    MCPOAuthSettings
 }
 
 func NewHandler(db *sql.DB, secret []byte) *Handler {
-	return &Handler{db: db, secret: secret, oauth: oauthSettingsFromEnv()}
+	return &Handler{db: db, secret: secret, oauth: oauthSettingsFromEnv(), mcp: mcpOAuthSettingsFromEnv()}
 }
 
 type credentials struct {
@@ -32,6 +33,9 @@ type credentials struct {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.serveMCPOAuth(w, r) {
+		return
+	}
 	allowedMethod := r.Method == http.MethodPost
 	if r.URL.Path == "/users/autocomplete" || r.URL.Path == "/users/directory" || r.URL.Path == "/auth/session" || strings.HasPrefix(r.URL.Path, "/internal/users/") || strings.HasPrefix(r.URL.Path, "/auth/oauth/") {
 		allowedMethod = r.Method == http.MethodGet

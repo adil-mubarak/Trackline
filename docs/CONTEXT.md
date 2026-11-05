@@ -24,20 +24,23 @@ readiness.
   unresolved actors are labeled “Unknown user.” Do not expose raw actor IDs in
   activity answers.
 - A separate `services/mcp` process provides stateless Streamable HTTP for
-  authenticated external MCP clients at the Gateway's `/mcp` route. It has no
-  database or public port; clients use Trackline bearer tokens, and its
-  read-only tools call owning APIs through the Gateway. AI chat is a Streamable
-  HTTP client of this service through private `MCP_INTERNAL_URL`; it forwards
-  the caller's bearer token, Gateway-verified user ID, and bounded request ID.
-  GitHub App tools remain local to AI and are not part of the standalone service.
-- Standalone MCP clients connect to the Gateway URL `/mcp` with a Trackline
-  bearer token, not the private MCP listener. The endpoint is documented in
-  `docs/MCP_SERVER.md`; local `make run-mcp` configures the private service for
-  `127.0.0.1:8088` and its Gateway upstream. The implementation registers seven
-  read-only tools and uses caller-authenticated Gateway APIs. The official Go
-  SDK test covers protocol tool listing and a `get_project` call with token
-  forwarding. This test is not a deployed Render/Aiven check or an external
-  host integration test.
+  external clients at the Gateway's `/mcp` route. It has no database or public
+  port. Claude hosted connectors use Auth-owned OAuth authorization code + PKCE
+  and DCR; compatible developer clients may use Trackline bearer tokens. OAuth
+  grants are checked through Auth and restricted by Gateway to the MCP route and
+  specific read-only tool APIs. OAuth state is in `auth_db` migration
+  `000006_mcp_oauth`; MCP remains DB-free. AI chat uses private
+  `MCP_INTERNAL_URL`, forwards caller identity and credentials, and remains
+  unchanged. GitHub App tools remain local to AI.
+- Standalone MCP clients connect to Gateway `/mcp`, not the private MCP
+  listener. Claude hosted connectors require a public HTTPS issuer configured
+  as `MCP_OAUTH_ISSUER_URL`; `MCP_RESOURCE_URL` defaults to issuer + `/mcp`.
+  `MCP_OAUTH_INTERNAL_SECRET` is shared by Auth/Gateway for introspection and
+  `MCP_USERNAME_LOOKUP_SECRET` by Gateway/MCP for private OAuth name enrichment.
+  Render generates both secrets; set the issuer in Render environment settings.
+  See `docs/MCP_SERVER.md` before configuring Claude. Local MCP remains on
+  loopback `127.0.0.1:8088`; the service exposes seven read-only tools and calls
+  caller-authenticated Gateway APIs.
 - Known unresolved challenge: accessible-project listing has reportedly failed
   in the deployed environment. `list_projects` maps to `GET /projects`, but no
   reproducer or root cause has been established. Treat the cause as unknown;
@@ -62,10 +65,13 @@ passed for the AI/history/chart work. The frontend build emits a non-blocking
 large-bundle warning. The focused Copilot launcher regression test and complete
 frontend suite/build also passed. `docker compose config --quiet`, Render startup
 shell syntax, and `git diff --check` passed after the database bootstrap change.
-The database bootstrap and standalone MCP have not yet been exercised against a
-running Compose stack, and Render deployment and external OAuth provider credentials/callbacks still need
-environment-specific verification. Browser-level OAuth behavior has not been
-verified end-to-end.
+The full Compose stack and Render deployment have not been run for standalone
+MCP OAuth, so live Claude connector behavior still needs environment-specific
+verification. OAuth handler tests cover DCR, PKCE code exchange, refresh
+rotation/replay revocation, introspection, and Gateway scope enforcement.
+`go test -race ./...`, `go vet ./...`, `golangci-lint run`, Compose/YAML/shell
+checks, and Auth/Gateway/MCP Docker builds passed. The Auth OAuth migration was
+applied and rolled back on an isolated MySQL 8.4 container.
 
 Automated handler tests use SQL mocks and HTTP test servers; container-backed
 database integration tests are not yet available. The Playwright smoke flow

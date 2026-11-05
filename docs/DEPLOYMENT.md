@@ -111,13 +111,21 @@ Optional GitHub App evidence requires `GITHUB_APP_ID`,
 `GITHUB_EVIDENCE_TO_OPENROUTER` and `GITHUB_CODE_TO_OPENROUTER` false unless
 organization policy explicitly approves sending that evidence to the model.
 
+Set the Blueprint's `MCP_OAUTH_ISSUER_URL` to the public HTTPS origin of this
+Render service (for example, `https://trackline-backend.onrender.com`). The
+OAuth resource URL defaults to that origin plus `/mcp`. Render generates the
+private `MCP_OAUTH_INTERNAL_SECRET` shared by Auth and Gateway and
+`MCP_USERNAME_LOOKUP_SECRET` shared by Gateway and MCP; if you create the
+service manually, set different random 32+ character secrets for each pair.
+
 The Blueprint sets the web service's `PORT` to `10000` and the health check to
 `/ready`. The startup script starts the public gateway on the assigned port
 first, starts NATS on loopback, starts the private MCP service, applies the four
 core service migrations (and the AI migration when AI is enabled), then starts
 the tracker services on loopback. The Gateway routes `/mcp` to the private MCP
-listener; external MCP clients must use the Gateway HTTPS URL and a Trackline
-bearer token. The gateway's `/ready` endpoint remains unhealthy until required
+listener; external MCP clients use the Gateway HTTPS URL. Claude hosted
+connectors authenticate through OAuth; compatible developer clients may still
+send a Trackline bearer token. The gateway's `/ready` endpoint remains unhealthy until required
 tracker services are ready. Check the deploy logs
 for sanitized migration output and TLS errors; database URL credentials are
 redacted.
