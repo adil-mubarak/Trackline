@@ -2,10 +2,10 @@
 
 `services/mcp` provides a separate, stateless Streamable HTTP MCP endpoint for
 read-only tracker access. Connect clients to the **Gateway URL** ending in
-`/mcp` (for local Compose, `http://localhost:8082/mcp`) and configure the
-client's HTTP Authorization header as `Bearer <Trackline access token>`. Do not
-connect to the MCP container directly; it has no public port. The Gateway
-validates the JWT and current session before proxying MCP requests.
+`/mcp` (for local Compose, `http://localhost:8082/mcp`). Do not connect to the
+MCP container directly; it has no public port. Claude hosted connectors use
+OAuth authorization code + PKCE through the Auth service. Claude Code may
+continue to use a Trackline bearer token in its protected MCP configuration.
 
 The toolset is `list_projects`, `get_project`, `project_issue_summary`,
 `list_project_issues`, `get_issue_details`, `recent_project_activity`, and
@@ -22,18 +22,63 @@ For a local full-app run, `make run-trackline` and `make run-backend` already
 start MCP; do not run `make run-mcp` alongside either target. Run `make run-mcp`
 separately only when launching the Gateway and tracker services through a setup
 that does not already start MCP. Configure `GATEWAY_INTERNAL_URL`; use
-`MCP_ADDR` to change the bind address. In deployment, route Gateway `/mcp` only
-to the private MCP service. The Gateway checks the Trackline bearer token on
-every MCP request, so clients must refresh or replace expired tokens.
-Browser-based MCP clients also need their exact web origin added to
-`CORS_ALLOWED_ORIGINS`; do not use a wildcard origin.
+`MCP_ADDR` to change the bind address. OAuth issuer and resource URLs are
+configured with `MCP_OAUTH_ISSUER_URL` and `MCP_RESOURCE_URL`; for local runs
+they default to `http://localhost:8082` and `http://localhost:8082/mcp`. The
+Gateway-to-Auth introspection secret must be a random value of at least 32
+characters in `MCP_OAUTH_INTERNAL_SECRET`; use the same value in both services.
+For local OAuth name enrichment, set a different random 32+ character
+`MCP_USERNAME_LOOKUP_SECRET` shared by Gateway and the private MCP process.
+
+## Claude hosted connector setup
+
+Hosted Claude web/Desktop connectors cannot reach localhost. Deploy Trackline
+behind public HTTPS, then configure Render's `MCP_OAUTH_ISSUER_URL` to the exact
+public origin, for example `https://trackline-backend-rslk.onrender.com`. The
+resource URL defaults to that origin plus `/mcp`; if you override it, it must
+match the URL entered in Claude exactly. Render creates
+`MCP_OAUTH_INTERNAL_SECRET` and `MCP_USERNAME_LOOKUP_SECRET` from the
+Blueprint; when deploying without the Blueprint, set different strong random
+32+ character secrets in the Render service environment.
+
+After redeploying, verify these public endpoints:
+
+```text
+GET https://YOUR-GATEWAY/.well-known/oauth-protected-resource/mcp
+GET https://YOUR-GATEWAY/.well-known/oauth-authorization-server
+```
+
+The first response's `resource` must exactly equal
+`https://YOUR-GATEWAY/mcp`; the second must advertise PKCE `S256`, the
+registration endpoint, and the OAuth endpoints. A request to `/mcp` without a
+token should return `401` with a `WWW-Authenticate` header pointing to the
+protected-resource metadata. `/ready` only checks Gateway/core readiness and
+does not test MCP OAuth.
+
+In Claude, remove the old failed Trackline connector and add a custom connector
+with the public HTTPS `/mcp` URL. Choose automatic OAuth client registration
+(DCR) if prompted; do not invent or enter a client ID. Claude will open the
+Trackline sign-in/consent page. Sign in with your Trackline credentials and
+approve the explicitly read-only `mcp:read` scope. Authorization uses PKCE,
+short-lived access tokens, and rotating refresh tokens. Authorization codes
+and refresh tokens are stored only as hashes in `auth_db`; Gateway introspection
+checks the current account/grant on requests and restricts OAuth tokens to MCP and the exact
+read-only API routes its tools use. Existing Trackline JWT clients remain
+supported.
+
+OAuth discovery, DCR, authorization, token and revocation endpoints are served
+by Auth through the Gateway. Set a stable HTTPS issuer before connecting
+Claude; changing it after client registration requires removing and re-adding
+the connector. Browser login and consent require a valid TLS certificate.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    HOST[Compatible MCP host] -->|Streamable HTTP + Bearer token| GW[Public Gateway /mcp]
-    GW -->|JWT/session validation; identity headers| MCP[Private standalone MCP service]
+    HOST[Claude hosted connector] -->|Streamable HTTP + OAuth PKCE token| GW[Public Gateway /mcp]
+    HOST2[Developer MCP host] -->|Streamable HTTP + Trackline JWT| GW
+    GW -->|JWT or scoped OAuth grant validation| AUTH[Auth service / auth_db]
+    GW -->|Verified caller identity| MCP[Private standalone MCP service]
     MCP -->|Caller Authorization + request ID| GWAPI[Gateway tracker APIs]
     GWAPI --> PROJECT[Project API]
     GWAPI --> ISSUE[Issue API]
@@ -42,12 +87,14 @@ flowchart LR
 ```
 
 The MCP process is stateless and has no database or public listener. Gateway
-validates the token/session on incoming MCP requests. The MCP process maps each
-tool call to an authenticated Gateway API request; the owning API applies its
-normal access rules. Activity/member results use Auth API name lookup rather
-than exposing raw actor IDs or email addresses. AI chat connects directly to
-this private service; external MCP clients use the Gateway route instead. Do
-not configure AI to call the public Gateway `/mcp` endpoint.
+validates the Trackline JWT or introspects the scoped OAuth grant on incoming
+MCP requests. OAuth access is further restricted to MCP and the read-only API
+methods used by its tools. The MCP process maps each tool call to an
+authenticated Gateway API request; the owning API applies its normal access
+rules. Activity/member results use Auth API name lookup rather than exposing
+raw actor IDs or email addresses. AI chat connects directly to this private
+service; external MCP clients use the Gateway route instead. Do not configure
+AI to call the public Gateway `/mcp` endpoint.
 
 ## MCP protocol walkthrough
 
@@ -63,8 +110,8 @@ oversized inputs/results are rejected. Issue lists are capped at 25 and activity
 at 20 items. The server also bounds request and upstream time and response size.
 
 For a protocol-level smoke check, use an MCP host/client that supports
-Streamable HTTP, point it at `<gateway-origin>/mcp`, and configure the bearer
-header through the host's protected secret mechanism. Discover tools, then call
+Streamable HTTP, point it at `<gateway-origin>/mcp`, and authenticate through
+OAuth or the host's protected Trackline bearer-token mechanism. Discover tools, then call
 `list_projects` and a `get_project` for an ID returned to that caller. Host
 configuration formats differ; use the host's documented remote MCP URL/header
 settings rather than connecting directly to port 8088. In browsers, allowlist

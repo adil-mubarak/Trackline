@@ -13,6 +13,43 @@ paths:
       summary: Gateway readiness check
       responses:
         '200': { description: Ready }
+  /.well-known/oauth-protected-resource/mcp:
+    get:
+      summary: Discover OAuth authorization servers for the MCP resource
+      responses:
+        '200': { description: RFC 9728 protected resource metadata }
+  /.well-known/oauth-authorization-server:
+    get:
+      summary: Discover Trackline's MCP OAuth authorization server
+      responses:
+        '200': { description: RFC 8414 authorization server metadata with PKCE S256 and DCR }
+  /oauth/register:
+    post:
+      summary: Dynamically register a public MCP OAuth client
+      responses:
+        '201': { description: Registered client with Claude callback URI }
+        '400': { description: Unsupported client metadata or redirect URI }
+  /oauth/authorize:
+    get:
+      summary: Sign in and consent to read-only MCP access
+      responses:
+        '200': { description: Trackline login and consent form }
+        '302': { description: Redirect to the registered OAuth callback with authorization code }
+    post:
+      summary: Submit Trackline credentials and user consent
+      responses:
+        '302': { description: Authorization code or access-denied response }
+  /oauth/token:
+    post:
+      summary: Exchange PKCE authorization code or rotate a refresh token
+      responses:
+        '200': { description: Scoped OAuth access token and optional refresh token }
+        '400': { description: Invalid grant or PKCE verification }
+  /oauth/revoke:
+    post:
+      summary: Revoke an OAuth grant or refresh token
+      responses:
+        '200': { description: Token revoked or unknown token ignored per RFC 7009 }
   /auth/{path}:
     parameters:
       - name: path
@@ -43,7 +80,9 @@ paths:
         '502': { description: AI or OpenRouter service unavailable }
   /mcp:
     post:
-      security: [{ bearerAuth: [] }]
+      security:
+        - bearerAuth: []
+        - mcpOAuth: [mcp:read]
       summary: Authenticated Streamable HTTP MCP endpoint
       description: Proxies MCP JSON-RPC requests to the private standalone MCP service.
       requestBody:
@@ -53,7 +92,7 @@ paths:
             schema: { type: object, description: MCP JSON-RPC request }
       responses:
         '200': { description: MCP JSON-RPC response }
-        '401': { description: Missing or invalid Trackline bearer token }
+        '401': { description: Missing/invalid token; includes OAuth protected-resource metadata challenge }
         '502': { description: MCP service unavailable }
 components:
   securitySchemes:
@@ -61,3 +100,12 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+    mcpOAuth:
+      type: oauth2
+      flows:
+        authorizationCode:
+          authorizationUrl: /oauth/authorize
+          tokenUrl: /oauth/token
+          scopes:
+            mcp:read: Read-only access to the caller's Trackline projects, issues, activity, and members
+            offline_access: Allow rotating refresh tokens

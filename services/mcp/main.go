@@ -73,7 +73,7 @@ func newMCPHandler(gatewayURL string, client *http.Client) http.Handler {
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, 128<<10)
 		mcp.NewStreamableHTTPHandler(func(req *http.Request) *mcp.Server {
-			return newTrackerServer(gatewayURL, req.Header.Get("Authorization"), req.Header.Get("X-Request-ID"), client)
+			return newTrackerServer(gatewayURL, req.Header.Get("Authorization"), req.Header.Get("X-Request-ID"), client, env("MCP_USERNAME_LOOKUP_SECRET", ""))
 		}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true}).ServeHTTP(w, r)
 	})
 }

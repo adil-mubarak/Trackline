@@ -40,7 +40,10 @@ tool result at 48 KiB, and aggregate tool evidence at 128 KiB. GitHub evidence
 and code tools remain local to AI and independently gated by the configured App
 and explicit opt-in flags; they are not advertised by the standalone MCP
 service. The standalone service has no database and also serves external MCP
-clients through the authenticated Gateway `/mcp` route.
+clients through Gateway `/mcp`. Claude hosted clients authenticate through an
+Auth-owned OAuth authorization-code/PKCE flow; scoped OAuth grants are
+introspected by Gateway and restricted to the MCP read-only API allowlist.
+Compatible developer clients may continue to use Trackline bearer JWTs.
 
 Issue list filters are assembled in `services/issue/query.go`: filter values are
 SQL parameters, while sort columns and directions come from fixed allowlists.

@@ -27,3 +27,8 @@
   challenges without claiming that an external host or deployed service was
   verified. The accessible-project listing error reported for the deployed
   Render/Aiven environment remains undiagnosed; its cause is unknown.
+- Claude hosted connector follow-up: add Auth-owned OAuth authorization code
+  + PKCE, DCR, refresh rotation/replay revocation, Gateway introspection and
+  scope-limited read-only MCP access; keep legacy bearer-token clients and the
+  AI MCP integration working. Deploy configuration and live Claude/Render
+  connection still require environment-specific verification.

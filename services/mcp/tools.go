@@ -30,7 +30,7 @@ var toolSpecs = []toolSpec{
 	{"list_project_members", "List usernames and roles for an accessible project. No email addresses are returned.", `{"type":"object","properties":{"project_id":{"type":"integer","minimum":1}},"required":["project_id"],"additionalProperties":false}`},
 }
 
-func newTrackerServer(gatewayURL, authorization, requestID string, client *http.Client) *mcp.Server {
+func newTrackerServer(gatewayURL, authorization, requestID string, client *http.Client, internalSecret string) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "trackline-mcp", Version: "1.0.0"}, nil)
 	falseValue := false
 	for _, spec := range toolSpecs {
@@ -46,7 +46,7 @@ func newTrackerServer(gatewayURL, authorization, requestID string, client *http.
 			}
 			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			data, err := execute(ctx, gatewayURL, authorization, requestID, spec.name, encoded, client)
+			data, err := execute(ctx, gatewayURL, authorization, requestID, spec.name, encoded, client, internalSecret)
 			if err != nil {
 				return nil, err
 			}
@@ -59,7 +59,11 @@ func newTrackerServer(gatewayURL, authorization, requestID string, client *http.
 	return s
 }
 
-func execute(ctx context.Context, gateway, authorization, requestID, name string, raw []byte, client *http.Client) (json.RawMessage, error) {
+func execute(ctx context.Context, gateway, authorization, requestID, name string, raw []byte, client *http.Client, internalSecrets ...string) (json.RawMessage, error) {
+	internalSecret := ""
+	if len(internalSecrets) > 0 {
+		internalSecret = internalSecrets[0]
+	}
 	if len(raw) > 8<<10 {
 		return nil, errors.New("tool arguments too large")
 	}
@@ -136,24 +140,24 @@ func execute(ctx context.Context, gateway, authorization, requestID, name string
 		q := url.Values{}
 		q.Set("project_id", strconv.FormatUint(args.ProjectID, 10))
 		q.Set("limit", strconv.Itoa(args.Limit))
-		data, err := callAPI(ctx, client, gateway, authorization, requestID, "GET", "/activity?"+q.Encode(), nil)
+		data, err := callAPI(ctx, client, gateway, authorization, requestID, "GET", "/activity?"+q.Encode(), nil, internalSecret)
 		if err != nil {
 			return nil, err
 		}
-		return resolveActivity(ctx, client, gateway, authorization, requestID, data)
+		return resolveActivity(ctx, client, gateway, authorization, requestID, data, internalSecret)
 	case "list_project_members":
 		if args.ProjectID == 0 {
 			return nil, errors.New("project_id must be positive")
 		}
-		data, err := callAPI(ctx, client, gateway, authorization, requestID, "GET", fmt.Sprintf("/projects/%d/members", args.ProjectID), nil)
+		data, err := callAPI(ctx, client, gateway, authorization, requestID, "GET", fmt.Sprintf("/projects/%d/members", args.ProjectID), nil, internalSecret)
 		if err != nil {
 			return nil, err
 		}
-		return resolveMembers(ctx, client, gateway, authorization, requestID, data)
+		return resolveMembers(ctx, client, gateway, authorization, requestID, data, internalSecret)
 	default:
 		return nil, errors.New("unknown read-only tracker tool")
 	}
-	return callAPI(ctx, client, gateway, authorization, requestID, "GET", path, nil)
+	return callAPI(ctx, client, gateway, authorization, requestID, "GET", path, nil, internalSecret)
 }
 
 func decodeArgs(data []byte, dst any) error {
@@ -176,7 +180,7 @@ func oneOf(v string, choices ...string) bool {
 	return false
 }
 
-func callAPI(ctx context.Context, client *http.Client, gateway, authorization, requestID, method, path string, body []byte) (json.RawMessage, error) {
+func callAPI(ctx context.Context, client *http.Client, gateway, authorization, requestID, method, path string, body []byte, internalSecret string) (json.RawMessage, error) {
 	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
 		return nil, errors.New("invalid internal path")
 	}
@@ -187,6 +191,9 @@ func callAPI(ctx context.Context, client *http.Client, gateway, authorization, r
 		return nil, errors.New("could not create tracker request")
 	}
 	req.Header.Set("Authorization", authorization)
+	if path == "/users/names" && internalSecret != "" {
+		req.Header.Set("X-MCP-Internal-Service-Token", internalSecret)
+	}
 	req.Header.Set("Accept", "application/json")
 	if requestID != "" && len(requestID) <= 128 {
 		req.Header.Set("X-Request-ID", requestID)
@@ -209,7 +216,7 @@ func callAPI(ctx context.Context, client *http.Client, gateway, authorization, r
 	return data, nil
 }
 
-func resolveMembers(ctx context.Context, c *http.Client, g, a, r string, data []byte) (json.RawMessage, error) {
+func resolveMembers(ctx context.Context, c *http.Client, g, a, r string, data []byte, internalSecret string) (json.RawMessage, error) {
 	var members []struct {
 		UserID    uint64 `json:"user_id"`
 		Role      string `json:"role"`
@@ -224,7 +231,7 @@ func resolveMembers(ctx context.Context, c *http.Client, g, a, r string, data []
 			ids = append(ids, m.UserID)
 		}
 	}
-	names, err := lookupNames(ctx, c, g, a, r, ids)
+	names, err := lookupNames(ctx, c, g, a, r, ids, internalSecret)
 	if err != nil {
 		return nil, err
 	}
@@ -243,7 +250,7 @@ func resolveMembers(ctx context.Context, c *http.Client, g, a, r string, data []
 	return json.Marshal(out)
 }
 
-func resolveActivity(ctx context.Context, c *http.Client, g, a, r string, data []byte) (json.RawMessage, error) {
+func resolveActivity(ctx context.Context, c *http.Client, g, a, r string, data []byte, internalSecret string) (json.RawMessage, error) {
 	var events []struct {
 		ID         uint64          `json:"id"`
 		ProjectID  uint64          `json:"project_id"`
@@ -264,7 +271,7 @@ func resolveActivity(ctx context.Context, c *http.Client, g, a, r string, data [
 			ids = append(ids, e.ActorID)
 		}
 	}
-	names, err := lookupNames(ctx, c, g, a, r, ids)
+	names, err := lookupNames(ctx, c, g, a, r, ids, internalSecret)
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +286,7 @@ func resolveActivity(ctx context.Context, c *http.Client, g, a, r string, data [
 	return json.Marshal(out)
 }
 
-func lookupNames(ctx context.Context, c *http.Client, g, a, r string, ids []uint64) (map[uint64]string, error) {
+func lookupNames(ctx context.Context, c *http.Client, g, a, r string, ids []uint64, internalSecret string) (map[uint64]string, error) {
 	out := map[uint64]string{}
 	for start := 0; start < len(ids); start += 100 {
 		end := min(start+100, len(ids))
@@ -289,7 +296,7 @@ func lookupNames(ctx context.Context, c *http.Client, g, a, r string, ids []uint
 		if err != nil {
 			return nil, err
 		}
-		data, err := callAPI(ctx, c, g, a, r, "POST", "/users/names", body)
+		data, err := callAPI(ctx, c, g, a, r, "POST", "/users/names", body, internalSecret)
 		if err != nil {
 			return nil, err
 		}

@@ -96,6 +96,9 @@ func TestRecentActivityResolvesActorNamesWithoutReturningActorIDs(t *testing.T) 
 		case "/activity":
 			_, _ = w.Write([]byte(`[{"id":1,"project_id":3,"issue_id":9,"actor_id":777,"event_type":"IssueCreated","payload":{},"occurred_at":"2026-11-04T10:00:00Z"},{"id":2,"project_id":3,"issue_id":10,"actor_id":888,"event_type":"IssueUpdated","payload":{},"occurred_at":"2026-11-04T10:01:00Z"}]`))
 		case "/users/names":
+			if r.Header.Get("X-MCP-Internal-Service-Token") != "mcp-test-shared-secret-32-bytes" {
+				t.Errorf("MCP internal auth header=%q", r.Header.Get("X-MCP-Internal-Service-Token"))
+			}
 			_, _ = w.Write([]byte(`[{"id":777,"username":"alex"}]`))
 		default:
 			http.NotFound(w, r)
@@ -103,7 +106,7 @@ func TestRecentActivityResolvesActorNamesWithoutReturningActorIDs(t *testing.T) 
 	}))
 	defer server.Close()
 
-	result, err := execute(context.Background(), server.URL, "Bearer test-token", "request-test", "recent_project_activity", []byte(`{"project_id":3,"limit":2}`), server.Client())
+	result, err := execute(context.Background(), server.URL, "Bearer test-token", "request-test", "recent_project_activity", []byte(`{"project_id":3,"limit":2}`), server.Client(), "mcp-test-shared-secret-32-bytes")
 	if err != nil {
 		t.Fatal(err)
 	}

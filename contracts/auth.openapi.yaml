@@ -208,6 +208,66 @@ paths:
         '200': { description: Authorization URL for a link flow; identity is not linked until provider callback succeeds }
         '401': { description: Authentication required }
         '409': { description: Provider identity is already linked to another account }
+  /.well-known/oauth-protected-resource/mcp:
+    get:
+      summary: MCP protected-resource OAuth metadata
+      responses:
+        '200': { description: RFC 9728 metadata; resource is the public Gateway MCP URL }
+  /.well-known/oauth-authorization-server:
+    get:
+      summary: OAuth authorization-server metadata for external MCP clients
+      responses:
+        '200': { description: RFC 8414 metadata including DCR and PKCE S256 }
+  /oauth/register:
+    post:
+      summary: Register a public OAuth client through RFC 7591 DCR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [redirect_uris]
+              properties:
+                client_name: { type: string, maxLength: 128 }
+                redirect_uris: { type: array, minItems: 1, maxItems: 1, items: { type: string, const: 'https://claude.ai/api/mcp/auth_callback' } }
+                token_endpoint_auth_method: { type: string, const: none }
+      responses:
+        '201': { description: Registered public client; no client secret is issued }
+        '400': { description: Unsupported metadata or redirect URI }
+  /oauth/authorize:
+    get:
+      summary: Begin OAuth authorization with PKCE S256
+      parameters:
+        - { name: client_id, in: query, required: true, schema: { type: string } }
+        - { name: redirect_uri, in: query, required: true, schema: { type: string, const: 'https://claude.ai/api/mcp/auth_callback' } }
+        - { name: code_challenge, in: query, required: true, schema: { type: string } }
+        - { name: code_challenge_method, in: query, required: true, schema: { type: string, const: S256 } }
+        - { name: scope, in: query, required: true, schema: { type: string, example: 'mcp:read offline_access' } }
+      responses:
+        '200': { description: Trackline credential and read-only consent form }
+        '302': { description: Redirect to registered client callback }
+  /oauth/token:
+    post:
+      summary: Exchange authorization code or rotate refresh token
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { type: object }
+      responses:
+        '200': { description: Short-lived scoped bearer token and rotating refresh token }
+        '400': { description: Invalid grant, code, or PKCE verifier }
+  /oauth/revoke:
+    post:
+      summary: Revoke OAuth access associated with a grant
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { type: object }
+      responses:
+        '200': { description: Token revoked or unrecognized token ignored }
 components:
   schemas:
     Credentials:
