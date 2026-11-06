@@ -460,7 +460,7 @@ func TestGatewayRoutesProjectScopedIssueMovesToIssueService(t *testing.T) {
 	}
 }
 
-func TestGatewayReadinessChecksEveryUpstream(t *testing.T) {
+func TestGatewayReadinessChecksCoreUpstreams(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/ready" {
 			w.WriteHeader(http.StatusOK)
@@ -469,14 +469,42 @@ func TestGatewayReadinessChecksEveryUpstream(t *testing.T) {
 		http.NotFound(w, r)
 	}))
 	defer upstream.Close()
-	if err := checkUpstreams(map[string]string{"auth": upstream.URL, "issue": upstream.URL}, http.DefaultTransport); err != nil {
+	if err := checkUpstreams(map[string]string{"auth": upstream.URL, "projects": upstream.URL, "issues": upstream.URL, "activity": upstream.URL}, http.DefaultTransport); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkUpstreams(map[string]string{"missing": "http://127.0.0.1:1"}, http.DefaultTransport); err == nil {
-		t.Fatal("expected unavailable upstream error")
+	for _, name := range []string{"auth", "projects", "issues", "activity"} {
+		t.Run(name, func(t *testing.T) {
+			if err := checkUpstreams(map[string]string{name: "http://127.0.0.1:1"}, http.DefaultTransport); err == nil {
+				t.Fatal("expected unavailable upstream error")
+			}
+			if err := checkUpstreams(map[string]string{name: ""}, http.DefaultTransport); err != nil {
+				t.Fatalf("unconfigured upstream should not block readiness: %v", err)
+			}
+		})
 	}
 	if err := checkUpstreams(map[string]string{"ai": "http://127.0.0.1:1", "mcp": "http://127.0.0.1:1", "optional": ""}, http.DefaultTransport); err != nil {
 		t.Fatalf("optional AI/MCP or unconfigured upstream should not block tracker readiness: %v", err)
+	}
+}
+
+func TestGatewayReadinessNeverProbesNonCoreRoutes(t *testing.T) {
+	for _, name := range []string{"ai", "mcp", "mcp_resource", "mcp_oauth_issuer", "mcp_oauth_secret", "mcp_username_secret", "future_metadata"} {
+		t.Run(name, func(t *testing.T) {
+			probed := make(chan struct{}, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				probed <- struct{}{}
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}))
+			defer upstream.Close()
+			if err := checkUpstreams(map[string]string{name: upstream.URL}, http.DefaultTransport); err != nil {
+				t.Errorf("non-core configuration must not affect readiness: %v", err)
+			}
+			select {
+			case <-probed:
+				t.Error("non-core configuration was probed")
+			default:
+			}
+		})
 	}
 }
 

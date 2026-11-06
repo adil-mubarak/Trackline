@@ -8,6 +8,16 @@
       "headers": {
         "X-Goog-Api-Key": "{env:STITCH_API_KEY}"
       }
+    },
+      "my-mcp": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8082/mcp",
+      "enabled": true,
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjEsInJvbGUiOiJhZG1pbiIsImV4cCI6MTc5Mzk0NDMyOH0.u2ZqI9KV2X9q0hYE3hx1_f6LXk1fApl9-rk3NZ7n-9Y"
+      },
+      "timeout": 30000
     }
   }
 }

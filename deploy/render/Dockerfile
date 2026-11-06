@@ -24,6 +24,8 @@ COPY --from=build /out/ /usr/local/bin/
 COPY --from=build /go/bin/migrate /usr/local/bin/migrate
 COPY --from=nats /usr/local/bin/nats-server /usr/local/bin/nats-server
 COPY db/migrations/ /app/migrations/
+RUN test -f /app/migrations/auth_db/000006_mcp_oauth.up.sql \
+    && test -f /app/migrations/auth_db/000006_mcp_oauth.down.sql
 COPY deploy/render/start.sh /app/start.sh
 RUN chmod 0555 /app/start.sh
 USER app
