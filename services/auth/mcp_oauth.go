@@ -412,7 +412,9 @@ func (h *Handler) renderOAuthError(w http.ResponseWriter, a oauthAuthorization, 
 }
 
 func (h *Handler) setOAuthPageHeaders(w http.ResponseWriter) {
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+	// Browsers can apply form-action to the post-login redirect as well.
+	// Permit only the registered Claude callback, not arbitrary external forms.
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' "+claudeRedirect+"; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Referrer-Policy", "no-referrer")
