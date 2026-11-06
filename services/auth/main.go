@@ -14,6 +14,7 @@ import (
 	"github.com/adil/bug-issue-tracker/pkg/health"
 	"github.com/adil/bug-issue-tracker/pkg/logging"
 	"github.com/adil/bug-issue-tracker/pkg/mysqltls"
+	"github.com/adil/bug-issue-tracker/pkg/requestid"
 	_ "github.com/go-sql-driver/mysql"
 )
 
@@ -57,7 +58,7 @@ func main() {
 	mux.Handle("/.well-known/", h)
 	mux.Handle("/oauth/", h)
 	mux.Handle("/users/autocomplete", h)
-	server := &http.Server{Addr: env("AUTH_ADDR", ":8081"), Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Addr: env("AUTH_ADDR", ":8081"), Handler: requestid.Middleware(logging.ConnectorDiagnostics("auth", mux)), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		slog.Info("auth service listening", "address", server.Addr)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

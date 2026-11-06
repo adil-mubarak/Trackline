@@ -125,6 +125,24 @@ external AI host. No such external host/deployment test is claimed here.
 
 ## Current diagnostic note
 
+### Connector logs on Render
+
+Gateway and Auth emit structured stdout events named `connector request started`
+and `connector request completed` for allowlisted OAuth/MCP routes. Render's
+Web Service **Logs** view can display these application logs without paid HTTP
+request logging. No feature flag is required; redeploy the updated backend.
+Completion events include service, fixed route, status, duration, and request ID.
+Auth also includes an allowlisted `oauth_error` category for OAuth error responses.
+Bodies, headers, URL queries, redirect URLs, credentials, and tokens are not logged.
+
+Make one fresh connection attempt, then inspect `/oauth/token` and `/mcp` events.
+A token failure points to OAuth exchange; successful exchange followed by MCP
+failure points to authorization/protocol handling. An initial unauthenticated MCP
+401 can be normal discovery, so inspect the sequence rather than one status.
+Gateway forwards its bounded request ID to Auth for correlation. Share only these
+sanitized events, never browser payloads or token responses. A started event without
+a completed event may indicate a still-open stream or interrupted process.
+
 `list_projects` is implemented as a caller-authenticated `GET /projects` call.
 The reported accessible-project listing error on the deployed Render/Aiven
 environment has not been reproduced or diagnosed; its cause remains unknown.
