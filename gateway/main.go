@@ -237,9 +237,10 @@ func newGatewayHandler(secret []byte, routes map[string]string, bucket *ratelimi
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 		defer cancel()
+		r.Header.Set("X-Request-ID", requestid.FromContext(r.Context()))
 		proxy.ServeHTTP(w, r.WithContext(ctx))
 	})
-	return requestid.Middleware(mux)
+	return requestid.Middleware(logging.ConnectorDiagnostics("gateway", mux))
 }
 
 func checkUpstreams(routes map[string]string, transport http.RoundTripper) error {

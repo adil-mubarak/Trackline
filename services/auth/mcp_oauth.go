@@ -753,6 +753,9 @@ func formParam(values url.Values, key string) (string, bool) {
 }
 
 func oauthError(w http.ResponseWriter, status int, code, description string) {
+	if diagnostic, ok := w.(interface{ SetOAuthError(string) }); ok {
+		diagnostic.SetOAuthError(code)
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
 	writeJSONStatus(w, status, map[string]string{"error": code, "error_description": description})
