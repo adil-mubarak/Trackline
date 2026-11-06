@@ -332,3 +332,12 @@ func TestMcpOAuthRefreshReplayPersistenceErrorsReturnServerError(t *testing.T) {
 func base64URLSHA256(value string) string {
 	return base64.RawURLEncoding.EncodeToString(sha256Bytes(value))
 }
+func TestOAuthPagePolicyAllowsClaudeCallback(t *testing.T) {
+	w := httptest.NewRecorder()
+	h := &Handler{}
+	h.setOAuthPageHeaders(w)
+	want := "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' " + claudeRedirect + "; base-uri 'none'; frame-ancestors 'none'"
+	if got := w.Header().Get("Content-Security-Policy"); got != want {
+		t.Fatalf("Content-Security-Policy = %q, want %q", got, want)
+	}
+}
