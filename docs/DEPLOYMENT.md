@@ -125,8 +125,11 @@ core service migrations (and the AI migration when AI is enabled), then starts
 the tracker services on loopback. The Gateway routes `/mcp` to the private MCP
 listener; external MCP clients use the Gateway HTTPS URL. Claude hosted
 connectors authenticate through OAuth; compatible developer clients may still
-send a Trackline bearer token. The gateway's `/ready` endpoint remains unhealthy until required
-tracker services are ready. Check the deploy logs
+send a Trackline bearer token. The gateway's `/ready` endpoint probes only the
+Auth, Project, Issue, and Activity services' `/ready` endpoints. Optional AI and
+MCP services do not affect gateway readiness; MCP metadata and internal secrets
+are never used as probe targets. A healthy `/ready` therefore confirms core
+tracker readiness, not AI or MCP availability. Check the deploy logs
 for sanitized migration output and TLS errors; database URL credentials are
 redacted.
 

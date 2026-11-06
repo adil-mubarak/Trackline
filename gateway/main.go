@@ -244,10 +244,11 @@ func newGatewayHandler(secret []byte, routes map[string]string, bucket *ratelimi
 
 func checkUpstreams(routes map[string]string, transport http.RoundTripper) error {
 	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
-	for name, target := range routes {
-		// AI and standalone MCP are optional features; an unavailable provider or
-		// MCP endpoint must not take the core issue tracker out of readiness.
-		if name == "ai" || name == "mcp" || target == "" {
+	// Only core services affect readiness. Routes also contains optional AI/MCP
+	// endpoints and MCP metadata and secrets, which must never be probed.
+	for _, name := range []string{"auth", "projects", "issues", "activity"} {
+		target := routes[name]
+		if target == "" {
 			continue
 		}
 		u, err := url.Parse(strings.TrimRight(target, "/") + "/ready")
