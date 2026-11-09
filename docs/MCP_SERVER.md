@@ -127,6 +127,9 @@ external AI host. No such external host/deployment test is claimed here.
 
 ### Connector logs on Render
 
+If dashboard logs are inaccessible, use the [local HTTPS debug setup](MCP_DEBUG.md)
+to reproduce the flow and view diagnostic events directly in your terminal.
+
 Gateway and Auth emit structured stdout events named `connector request started`
 and `connector request completed` for allowlisted OAuth/MCP routes. Render's
 Web Service **Logs** view can display these application logs without paid HTTP

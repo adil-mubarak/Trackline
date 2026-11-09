@@ -15,6 +15,10 @@ DATABASES = auth_db project_db issue_db activity_db ai_db
 help: ## List available targets (default)
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_-]+:.*## / {printf "  %-25s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
+.PHONY: debug-mcp
+debug-mcp: ## Run local MCP OAuth debugging (PUBLIC_ORIGIN=https://your-tunnel-host)
+	python3 scripts/debug_mcp.py "$(PUBLIC_ORIGIN)"
+
 run-trackline: ## Run Trackline's Go backend and React frontend locally (start docker-up first)
 	$(MAKE) -j8 run-auth run-project run-issue run-activity run-ai run-mcp run-gateway run-frontend
 
