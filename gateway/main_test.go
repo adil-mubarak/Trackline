@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/adil/bug-issue-tracker/pkg/auth"
 	"github.com/adil/bug-issue-tracker/pkg/ratelimit"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestNormalizeAPIPath(t *testing.T) {
@@ -192,6 +194,86 @@ func TestGatewayOAuthTokenIsScopedToReadOnlyMCPRoutes(t *testing.T) {
 	handler.ServeHTTP(w, r)
 	if w.Code != http.StatusOK || projectHits != 1 {
 		t.Fatalf("read request status=%d projectHits=%d body=%s", w.Code, projectHits, w.Body.String())
+	}
+}
+
+func TestGatewayMCPPublicHostWithLoopbackSDK(t *testing.T) {
+	const publicHost = "trackline.example.test"
+	const resource = "https://" + publicHost + "/mcp"
+	const initialize = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"gateway-test","version":"1.0"}}}`
+	secret := []byte("gateway-test-secret-at-least-32-bytes")
+	token, err := auth.IssueScopedToken(55, "member", 0, 17, resource, "mcp:read offline_access", secret, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sdk := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
+		return mcp.NewServer(&mcp.Implementation{Name: "gateway-test", Version: "1.0"}, nil)
+	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	upstream := httptest.NewServer(sdk)
+	defer upstream.Close()
+	authService := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/oauth/introspect" {
+			// Public OAuth endpoints must keep their original Host.
+			_, _ = io.WriteString(w, r.Host)
+			return
+		}
+		var input struct {
+			Token string `json:"token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.Token != token {
+			t.Errorf("introspection did not receive access token: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"active":true,"user_id":55,"role":"member","password_reset_version":0,"scope":"mcp:read offline_access","audience":"`+resource+`"}`)
+	}))
+	defer authService.Close()
+	routes := map[string]string{"auth": authService.URL, "mcp": upstream.URL, "mcp_resource": resource, "mcp_oauth_secret": "gateway-auth-internal-secret-32-bytes"}
+	handler := newGatewayHandler(secret, routes, ratelimit.New(20, 1), http.DefaultTransport)
+	newInitialize := func(target string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, target, strings.NewReader(initialize))
+		r.Host = publicHost
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Accept", "application/json, text/event-stream")
+		r.Header.Set("Authorization", "Bearer "+token)
+		return r
+	}
+	t.Run("direct public host remains denied", func(t *testing.T) {
+		r := newInitialize(upstream.URL + "/mcp")
+		r.RequestURI = ""
+		resp, err := upstream.Client().Do(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("direct public Host status=%d, want 403", resp.StatusCode)
+		}
+	})
+	for _, path := range []string{"/mcp", "/api/mcp"} {
+		t.Run(path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, newInitialize("https://"+publicHost+path))
+			if w.Code != http.StatusOK {
+				t.Fatalf("initialize status=%d body=%s", w.Code, w.Body.String())
+			}
+			var result struct {
+				Result struct {
+					ProtocolVersion string `json:"protocolVersion"`
+				} `json:"result"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || result.Result.ProtocolVersion == "" {
+				t.Fatalf("missing SDK initialize result: %s (error=%v)", w.Body.String(), err)
+			}
+		})
+	}
+	for _, path := range []string{"/oauth/token", "/api/oauth/token", "/.well-known/oauth-authorization-server"} {
+		t.Run(path, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "https://"+publicHost+path, nil))
+			if w.Code != http.StatusOK || w.Body.String() != publicHost {
+				t.Fatalf("non-MCP Host changed: status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 
