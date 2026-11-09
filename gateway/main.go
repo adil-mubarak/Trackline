@@ -224,6 +224,13 @@ func newGatewayHandler(secret []byte, routes map[string]string, bucket *ratelimi
 		proxy.Transport = transport
 		requestTimeout := 10 * time.Second
 		if r.URL.Path == "/mcp" {
+			// The SDK validates Host on loopback listeners. Use the trusted
+			// upstream authority, not the public Host forwarded by the caller.
+			director := proxy.Director
+			proxy.Director = func(req *http.Request) {
+				director(req)
+				req.Host = destination.Host
+			}
 			proxy.Transport = mcpTransport
 			requestTimeout = 35 * time.Second
 		}
